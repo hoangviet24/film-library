@@ -1,490 +1,462 @@
 import os
 import sys
 import vlc
-import config
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-    QListWidgetItem, QPushButton, QSlider, QLabel, 
-    QFileDialog, QFrame, QStackedWidget
+    QFileDialog, QFrame, QStackedWidget, QLabel, QPushButton
 )
-from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtGui import QKeySequence, QShortcut, QDragEnterEvent, QDropEvent
 
-import config  # Khởi tạo VLC DLL trên Windows nếu cần
+import config
 from config import VALID_VIDEO_EXTENSIONS
-from utils import get_cached_thumbnail, ThumbnailWorker, load_history, save_history
+from player_controller import PlayerController
+from styles import (
+    MAIN_WINDOW_STYLE, CARD_STYLE, BTN_CONTROL_STYLE, 
+    COLOR_ACCENT, COLOR_BG_APP
+)
+from utils import ThumbnailWorker, load_history, save_history
 from widgets import (
-    AutoFitListWidget,
-    EpisodeItemWidget,
+    LandingPage,
+    PlayerControlsBar,
+    PlaylistSidebar,
     FloatingVideoWindow,
     VideoOverlayPanel,
-    SmoothScrollArea,
     VlcVideoWidget
 )
 
 
 class VideoPlayerApp(QMainWindow):
     """
-    Cửa sổ chính của ứng dụng phát video Fluent Media Player
-    với đầy đủ tính năng chuyển tập phim tiếp theo/lùi lại (Prev/Next Episode),
-    tự động phát tập tiếp theo khi hết phim, thanh trượt đồng bộ và giao diện hiện đại.
+    Cửa sổ chính của Fluent Media Player:
+    - Bố cục tối ưu trải nghiệm: Khung phát Video chính bên trái, Playlist bên phải
+    - Hỗ trợ chế độ Rạp phim (Thu gọn Playlist để tập trung xem video)
+    - Tự động chuyển tập tiếp theo, ghi nhớ tiến độ phát
+    - Kéo & thả tệp/thư mục trực tiếp vào cửa sổ
+    - Phím tắt tiện lợi phong phú
     """
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Fluent Media Player")
-        self.setGeometry(100, 40, 1150, 850)
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #0F0F0F;
-                color: #FFFFFF;
-            }
-            QLabel {
-                color: #E0E0E0;
-                font-family: 'Segoe UI', Arial, sans-serif;
-            }
-        """)
-        vlc_dir = config.VLC_PATH
-        vlc_arg = [
-            "--quiet", 
-            "--no-xlib", 
-            "--no-video-title-show",
-            f'--plugin-path={os.path.join(vlc_dir, "plugins")}',
-            f'--libvlc-path={os.path.join(vlc_dir, "libvlc.dll")}'
-        ]
-        # Khởi tạo VLC Instance & Media Player (Tắt log spam console)
-        self.vlc_instance = vlc.Instance(vlc_arg)
-        if self.vlc_instance is None:
-            self.vlc_instance = vlc.Instance()
-        if self.vlc_instance:
-            self.media_player = self.vlc_instance.media_player_new()
-        else:
-            raise Exception(f"VLC instance is None! Check in {config.VLC_PATH}")
-        self.media_player.video_set_mouse_input(False)
-        self.media_player.video_set_key_input(False)
+        self.setGeometry(100, 40, 1180, 780)
+        self.setMinimumSize(850, 550)
+        self.setStyleSheet(MAIN_WINDOW_STYLE)
+        self.setAcceptDrops(True)
 
+        # Bộ điều khiển VLC Player
+        self.player = PlayerController(self)
+        self.player.playback_state_changed.connect(self._on_playback_state_changed)
+        self.player.volume_changed.connect(self._on_volume_changed)
+        self.player.rate_changed.connect(self._on_rate_changed)
+
+        # Dữ liệu ứng dụng
         self.history = load_history()
         self.current_video_path = None
         self.movies_data = {}
         self.popout_window = None
         self.is_user_seeking = False
         self.is_fullscreen_mode = False
+        self.is_playlist_visible = True
 
-        # Khởi tạo Worker chạy ngầm tạo Thumbnail bất đồng bộ
+        # Worker tạo ảnh thu nhỏ (Thumbnail) bất đồng bộ
         self.thumb_worker = ThumbnailWorker()
-        self.thumb_worker.thumbnail_ready.connect(self.on_thumbnail_ready)
+        self.thumb_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
         self.thumb_worker.start()
 
         self.init_ui()
+        self.init_shortcuts()
 
-        # Timer cập nhật tiến độ phát
+        # Timer cập nhật tiến độ (350ms)
         self.timer = QTimer(self)
         self.timer.setInterval(350)
-        self.timer.timeout.connect(self.update_ui_state)
+        self.timer.timeout.connect(self._update_progress_tick)
         self.timer.start()
 
     def init_ui(self):
         self.stacked_widget = QStackedWidget()
         self.setCentralWidget(self.stacked_widget)
 
-        # ---------------- 1. LANDING PAGE ----------------
-        landing_widget = QWidget()
-        landing_layout = QVBoxLayout(landing_widget)
-        landing_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        landing_layout.setSpacing(20)
+        # ============================================================
+        # 1. TRANG MỞ ĐẦU (LANDING PAGE - INDEX 0)
+        # ============================================================
+        self.landing_page = LandingPage(self)
+        self.landing_page.open_folder_clicked.connect(self.open_folder_dialog)
+        self.landing_page.open_file_clicked.connect(self.open_file_dialog)
+        self.landing_page.file_dropped.connect(self.handle_dropped_path)
+        self.landing_page.resume_video_clicked.connect(self.play_single_file)
+        self.landing_page.update_recent_history(self.history)
+        self.stacked_widget.addWidget(self.landing_page)
 
-        lbl_app_logo = QLabel("🎬")
-        lbl_app_logo.setStyleSheet("font-size: 64px;")
-        lbl_app_logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        landing_layout.addWidget(lbl_app_logo)
+        # ============================================================
+        # 2. GIAO DIỆN PHÁT CHÍNH (MAIN PLAYER VIEW - INDEX 1)
+        # ============================================================
+        self.player_page = QWidget()
+        player_page_layout = QHBoxLayout(self.player_page)
+        player_page_layout.setContentsMargins(14, 12, 14, 14)
+        player_page_layout.setSpacing(14)
 
-        lbl_welcome = QLabel("Chào mừng đến với Fluent Media Player")
-        lbl_welcome.setStyleSheet("font-size: 22px; font-weight: bold; color: #FFFFFF;")
-        lbl_welcome.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        landing_layout.addWidget(lbl_welcome)
+        # --- CỘT TRÁI: KHUNG VIDEO VÀ THANH ĐIỀU KHIỂN ---
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
 
-        lbl_sub = QLabel("Trải nghiệm xem phim mượt mà, hiện đại và tiện lợi")
-        lbl_sub.setStyleSheet("font-size: 13px; color: #888888; margin-bottom: 10px;")
-        lbl_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        landing_layout.addWidget(lbl_sub)
+        # Top Navigation Bar (Nút quay lại Home, Đường dẫn thư mục, Nút đổi thư mục)
+        top_bar = QHBoxLayout()
+        top_bar.setSpacing(8)
 
-        btn_start_open = QPushButton("📁 Chọn Thư Mục Phim")
-        btn_start_open.setFixedSize(280, 56)
-        btn_start_open.setStyleSheet("""
-            QPushButton {
-                background-color: #0078D4; color: white; border-radius: 8px; 
-                font-size: 15px; font-weight: bold; border: none;
-            }
-            QPushButton:hover { background-color: #1084E3; }
-            QPushButton:pressed { background-color: #005A9E; }
-        """)
-        btn_start_open.clicked.connect(self.open_folder)
-        landing_layout.addWidget(btn_start_open, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.stacked_widget.addWidget(landing_widget)
+        self.btn_back_home = QPushButton("🏠 Trang chủ")
+        self.btn_back_home.setStyleSheet(BTN_CONTROL_STYLE)
+        self.btn_back_home.setToolTip("Quay lại màn hình chính")
+        self.btn_back_home.clicked.connect(self.show_landing_page)
+        top_bar.addWidget(self.btn_back_home)
 
-        # ---------------- 2. MAIN SCROLLABLE UI (SMOOTH SCROLL) ----------------
-        self.scroll_area = SmoothScrollArea()
-        self.scroll_area.setStyleSheet("""
-            QScrollArea {
-                border: none;
-                background-color: #0F0F0F;
-            }
-            QScrollBar:vertical {
-                border: none;
-                background: rgba(25, 25, 25, 0.6);
-                width: 8px;
-                margin: 4px 2px 4px 2px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: rgba(255, 255, 255, 0.22);
-                min-height: 35px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical:hover {
-                background: #0078D4;
-            }
-            QScrollBar::handle:vertical:pressed {
-                background: #106EBE;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-                border: none;
-                background: none;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: none;
-            }
-        """)
-        self.scroll_area.verticalScrollBar().valueChanged.connect(self.on_scroll_changed)
+        self.lbl_folder_path = QLabel("Chưa mở thư mục")
+        self.lbl_folder_path.setStyleSheet("color: #888888; font-size: 12px; margin-left: 6px;")
+        top_bar.addWidget(self.lbl_folder_path, stretch=1)
 
-        self.main_content = QWidget()
-        self.main_content_layout = QVBoxLayout(self.main_content)
-        self.main_content_layout.setContentsMargins(24, 16, 24, 24)
-        self.main_content_layout.setSpacing(16)
+        self.btn_switch_folder = QPushButton("📁 Đổi thư mục")
+        self.btn_switch_folder.setStyleSheet(BTN_CONTROL_STYLE)
+        self.btn_switch_folder.clicked.connect(self.open_folder_dialog)
+        top_bar.addWidget(self.btn_switch_folder)
 
-        # Top Action Bar
-        self.top_bar_widget = QWidget()
-        self.top_bar = QHBoxLayout(self.top_bar_widget)
-        self.top_bar.setContentsMargins(0, 0, 0, 0)
+        left_layout.addLayout(top_bar)
 
-        btn_change_folder = QPushButton("📁 Chọn Thư Mục Khác")
-        btn_change_folder.setStyleSheet("""
-            QPushButton {
-                background-color: #202020; color: #E0E0E0; border-radius: 6px; 
-                padding: 8px 16px; font-weight: bold; border: 1px solid #333333;
-                font-size: 13px;
-            }
-            QPushButton:hover { background-color: #2D2D2D; border-color: #444444; color: #FFFFFF; }
-        """)
-        btn_change_folder.clicked.connect(self.open_folder)
-        self.top_bar.addWidget(btn_change_folder)
-        
-        self.lbl_current_folder = QLabel("Chưa chọn thư mục")
-        self.lbl_current_folder.setStyleSheet("color: #888888; font-size: 13px; margin-left: 10px;")
-        self.top_bar.addWidget(self.lbl_current_folder)
-        self.top_bar.addStretch()
-        self.main_content_layout.addWidget(self.top_bar_widget)
-
-        # KHUNG CHỨA VIDEO CHUYÊN DỤNG (VlcVideoWidget)
+        # Khu vực phát Video (VlcVideoWidget)
         self.video_area_widget = QWidget()
         self.video_area_layout = QVBoxLayout(self.video_area_widget)
         self.video_area_layout.setContentsMargins(0, 0, 0, 0)
 
         self.video_container = VlcVideoWidget()
-        self.video_container.setMinimumHeight(280)  # Giới hạn tối thiểu khi thu nhỏ
-        self.video_container.mouse_moved.connect(self.on_video_mouse_moved)
-        self.video_container.mouse_left.connect(self.on_video_mouse_left)
+        self.video_container.setMinimumHeight(300)
+        self.video_container.mouse_moved.connect(self._on_video_mouse_moved)
+        self.video_container.mouse_left.connect(self._on_video_mouse_left)
         self.video_container.double_clicked.connect(self.toggle_fullscreen)
         self.video_area_layout.addWidget(self.video_container)
 
-        # Placeholder khi video chuyển sang chế độ Pop-out
+        # Placeholder khi video đang được Pop-out ra cửa sổ nổi
         self.popout_placeholder = QFrame()
-        self.popout_placeholder.setMinimumHeight(240)
-        self.popout_placeholder.setStyleSheet("background-color: #181818; border: 2px dashed #333333; border-radius: 10px;")
-        placeholder_layout = QVBoxLayout(self.popout_placeholder)
-        placeholder_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_ph_title = QLabel("📺 Video đang phát ở chế độ Mini Player (Pop-out)")
-        lbl_ph_title.setStyleSheet("color: #FFFFFF; font-size: 16px; font-weight: bold;")
-        lbl_ph_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_ph_desc = QLabel("Bạn có thể điều khiển trên cửa sổ nổi hoặc bấm nút bên dưới để đưa video về đây.")
-        lbl_ph_desc.setStyleSheet("color: #888888; font-size: 12px; margin-top: 4px;")
-        lbl_ph_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn_restore_main = QPushButton("⤢ Thu hồi Video về Cửa Sổ Chính")
-        btn_restore_main.setStyleSheet("""
-            QPushButton {
-                background-color: #0078D4; color: white; border-radius: 6px; 
-                padding: 8px 18px; font-weight: bold; margin-top: 10px; border: none;
-            }
-            QPushButton:hover { background-color: #1084E3; }
+        self.popout_placeholder.setMinimumHeight(280)
+        self.popout_placeholder.setStyleSheet(f"""
+            QFrame {{
+                background-color: #141414;
+                border: 2px dashed rgba(255, 255, 255, 0.15);
+                border-radius: 12px;
+            }}
         """)
-        btn_restore_main.clicked.connect(self.restore_video_from_popout)
-        placeholder_layout.addWidget(lbl_ph_title)
-        placeholder_layout.addWidget(lbl_ph_desc)
-        placeholder_layout.addWidget(btn_restore_main, alignment=Qt.AlignmentFlag.AlignCenter)
+        ph_layout = QVBoxLayout(self.popout_placeholder)
+        ph_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_layout.setSpacing(10)
+
+        lbl_ph_icon = QLabel("📺")
+        lbl_ph_icon.setStyleSheet("font-size: 38px; background: transparent; border: none;")
+        lbl_ph_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_layout.addWidget(lbl_ph_icon)
+
+        lbl_ph_title = QLabel("Video đang phát ở chế độ Mini Player (Pop-out)")
+        lbl_ph_title.setStyleSheet("color: #FFFFFF; font-size: 15px; font-weight: bold; background: transparent; border: none;")
+        lbl_ph_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_layout.addWidget(lbl_ph_title)
+
+        lbl_ph_desc = QLabel("Cửa sổ nổi đang ghim trên các ứng dụng khác. Bấm nút dưới để đưa video về lại đây.")
+        lbl_ph_desc.setStyleSheet("color: #888888; font-size: 12px; background: transparent; border: none;")
+        lbl_ph_desc.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ph_layout.addWidget(lbl_ph_desc)
+
+        btn_restore_ph = QPushButton("⤢ Thu Hồi Video Về Đây")
+        btn_restore_ph.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLOR_ACCENT}; color: white; border-radius: 6px; 
+                padding: 8px 18px; font-weight: bold; font-size: 13px; border: none;
+            }}
+            QPushButton:hover {{ background-color: #1084E3; }}
+        """)
+        btn_restore_ph.clicked.connect(self.restore_video_from_popout)
+        ph_layout.addWidget(btn_restore_ph, alignment=Qt.AlignmentFlag.AlignCenter)
+
         self.popout_placeholder.hide()
         self.video_area_layout.addWidget(self.popout_placeholder)
 
-        self.main_content_layout.addWidget(self.video_area_widget)
+        left_layout.addWidget(self.video_area_widget, stretch=1)
 
-        # OVERLAY CONTROLS ĐỘC LẬP (KHÔNG GÂY MÀN ĐEN)
-        self.main_overlay = VideoOverlayPanel(self.video_container, self, mode="main")
-        self.fs_overlay = VideoOverlayPanel(self.video_container, self, mode="fullscreen")
+        # Thanh điều khiển PlayerControlsBar
+        self.controls_bar = PlayerControlsBar(self)
+        self.controls_bar.play_clicked.connect(self.toggle_play)
+        self.controls_bar.prev_clicked.connect(self.play_prev_episode)
+        self.controls_bar.next_clicked.connect(self.play_next_episode)
+        self.controls_bar.rewind_clicked.connect(lambda: self.seek_relative(-5))
+        self.controls_bar.forward_clicked.connect(lambda: self.seek_relative(5))
+        self.controls_bar.seek_percentage.connect(self.seek_to_percentage)
+        self.controls_bar.slider_pressed.connect(self._on_slider_pressed)
+        self.controls_bar.slider_released.connect(self._on_slider_released)
+        self.controls_bar.volume_changed.connect(self.set_volume)
+        self.controls_bar.mute_toggled.connect(self.toggle_mute)
+        self.controls_bar.speed_changed.connect(self.set_speed)
+        self.controls_bar.fullscreen_clicked.connect(self.enter_fullscreen)
+        self.controls_bar.popout_clicked.connect(self.open_popout_video)
+        self.controls_bar.playlist_toggle_clicked.connect(self.toggle_playlist_sidebar)
+        left_layout.addWidget(self.controls_bar)
 
-        # CONTROLS BAR BÊN DƯỚI VIDEO
-        self.controls_card = QFrame()
-        self.controls_card.setStyleSheet("""
-            QFrame {
-                background-color: #181818;
-                border-radius: 10px;
-                border: 1px solid #282828;
-                padding: 10px 16px;
-            }
-        """)
-        controls_layout = QVBoxLayout(self.controls_card)
-        controls_layout.setSpacing(10)
+        player_page_layout.addWidget(left_column, stretch=1)
 
-        # Thanh trượt tiến độ (Slider)
-        self.slider_progress = QSlider(Qt.Orientation.Horizontal)
-        self.slider_progress.setRange(0, 1000)
-        self.slider_progress.setStyleSheet("""
-            QSlider::groove:horizontal {
-                height: 6px;
-                background: #2E2E2E;
-                border-radius: 3px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #0078D4;
-                border-radius: 3px;
-            }
-            QSlider::handle:horizontal {
-                background: #FFFFFF;
-                width: 14px;
-                height: 14px;
-                margin: -4px 0;
-                border-radius: 7px;
-            }
-            QSlider::handle:horizontal:hover {
-                background: #60A5FA;
-                transform: scale(1.2);
-            }
-        """)
-        self.slider_progress.sliderPressed.connect(self.on_slider_pressed)
-        self.slider_progress.sliderReleased.connect(self.on_slider_released)
-        controls_layout.addWidget(self.slider_progress)
+        # --- CỘT PHẢI: SIDEBAR DANH SÁCH BỘ PHIM & TẬP PHIM ---
+        self.sidebar = PlaylistSidebar(self)
+        self.sidebar.episode_selected.connect(self.play_video_file)
+        self.sidebar.change_folder_clicked.connect(self.open_folder_dialog)
+        self.sidebar.close_sidebar_clicked.connect(self.toggle_playlist_sidebar)
+        self.sidebar.thumbnails_needed.connect(self.thumb_worker.set_tasks)
+        player_page_layout.addWidget(self.sidebar)
 
-        btn_bar = QHBoxLayout()
-        btn_bar.setSpacing(10)
-        
-        btn_ctrl_style = """
-            QPushButton {
-                background-color: #242424; color: #FFFFFF;
-                border-radius: 6px; padding: 7px 12px; font-size: 13px; font-weight: 500;
-                border: 1px solid #333333;
-            }
-            QPushButton:hover { background-color: #333333; border-color: #444444; }
-        """
+        self.stacked_widget.addWidget(self.player_page)
 
-        # Nút Tập trước
-        btn_prev_ep = QPushButton("⏮")
-        btn_prev_ep.setStyleSheet(btn_ctrl_style)
-        btn_prev_ep.setToolTip("Tập trước (Ctrl+← / P)")
-        btn_prev_ep.clicked.connect(self.play_prev_episode)
-        btn_bar.addWidget(btn_prev_ep)
-
-        # Nút Tua lùi 5s
-        btn_back = QPushButton("↺ 5s")
-        btn_back.setStyleSheet(btn_ctrl_style)
-        btn_back.setToolTip("Tua lùi 5 giây (←)")
-        btn_back.clicked.connect(lambda: self.seek_relative(-5))
-        btn_bar.addWidget(btn_back)
-
-        # Nút Play / Pause chính
-        self.btn_play = QPushButton("▶")
-        self.btn_play.setFixedSize(40, 40)
-        self.btn_play.setStyleSheet("""
-            QPushButton {
-                background-color: #0078D4; border-radius: 20px;
-                font-size: 16px; color: white; border: none; font-weight: bold;
-            }
-            QPushButton:hover { background-color: #1084E3; }
-            QPushButton:pressed { background-color: #005A9E; }
-        """)
-        self.btn_play.setToolTip("Phát / Tạm dừng (Space)")
-        self.btn_play.clicked.connect(self.toggle_play)
-        btn_bar.addWidget(self.btn_play)
-
-        # Nút Tua tiến 5s
-        btn_forward = QPushButton("5s ↻")
-        btn_forward.setStyleSheet(btn_ctrl_style)
-        btn_forward.setToolTip("Tua tiến 5 giây (→)")
-        btn_forward.clicked.connect(lambda: self.seek_relative(5))
-        btn_bar.addWidget(btn_forward)
-
-        # Nút Tập tiếp theo
-        btn_next_ep = QPushButton("⏭")
-        btn_next_ep.setStyleSheet(btn_ctrl_style)
-        btn_next_ep.setToolTip("Tập tiếp theo (Ctrl+→ / N)")
-        btn_next_ep.clicked.connect(self.play_next_episode)
-        btn_bar.addWidget(btn_next_ep)
-
-        self.lbl_time = QLabel("00:00 / 00:00")
-        self.lbl_time.setStyleSheet("color: #AAAAAA; font-size: 12px; font-family: 'Consolas', monospace; margin-left: 8px;")
-        btn_bar.addWidget(self.lbl_time)
-
-        btn_bar.addStretch()
-
-        # NÚT FULLSCREEN DEDICATED
-        self.btn_fullscreen = QPushButton("⤢ Fullscreen")
-        self.btn_fullscreen.setStyleSheet(btn_ctrl_style)
-        self.btn_fullscreen.setToolTip("Xem toàn màn hình (F)")
-        self.btn_fullscreen.clicked.connect(self.enter_fullscreen)
-        btn_bar.addWidget(self.btn_fullscreen)
-
-        # NÚT POP-OUT
-        self.btn_popout = QPushButton("⧉ Pop-out Mini")
-        self.btn_popout.setStyleSheet(btn_ctrl_style)
-        self.btn_popout.setToolTip("Mở cửa sổ video thu nhỏ nổi trên các ứng dụng khác")
-        self.btn_popout.clicked.connect(self.open_popout_video)
-        btn_bar.addWidget(self.btn_popout)
-
-        controls_layout.addLayout(btn_bar)
-        self.main_content_layout.addWidget(self.controls_card)
-
-        # ---------------- BỐ CỤC DỌC: PHIM TRÊN - TẬP DƯỚI ----------------
-        self.lbl_movies_header = QLabel("🎬 DANH SÁCH BỘ PHIM")
-        self.lbl_movies_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #0078D4; margin-top: 8px;")
-        self.main_content_layout.addWidget(self.lbl_movies_header)
-
-        self.list_movies = AutoFitListWidget()
-        self.list_movies.setStyleSheet("""
-            QListWidget {
-                background-color: #181818;
-                border-radius: 8px;
-                border: 1px solid #242424;
-            }
-            QListWidget::item {
-                padding: 10px 14px;
-                border-bottom: 1px solid #222222;
-                color: #CCCCCC;
-                font-size: 13px;
-            }
-            QListWidget::item:hover {
-                background-color: #202020;
-                color: #FFFFFF;
-            }
-            QListWidget::item:selected {
-                background-color: #0078D4;
-                color: white;
-                font-weight: bold;
-                border-radius: 4px;
-            }
-        """)
-        self.list_movies.itemClicked.connect(self.on_movie_selected)
-        self.main_content_layout.addWidget(self.list_movies)
-
-        self.lbl_episodes_header = QLabel("🎞️ CÁC TẬP PHIM & TIẾN ĐỘ")
-        self.lbl_episodes_header.setStyleSheet("font-size: 14px; font-weight: bold; color: #0078D4; margin-top: 8px;")
-        self.main_content_layout.addWidget(self.lbl_episodes_header)
-
-        self.list_episodes = AutoFitListWidget()
-        self.list_episodes.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.list_episodes.setStyleSheet("""
-            QListWidget {
-                background-color: #181818;
-                border-radius: 8px;
-                border: 1px solid #242424;
-            }
-            QListWidget::item {
-                border-bottom: 1px solid #222222;
-                border-radius: 6px;
-            }
-            QListWidget::item:hover {
-                background-color: #222222;
-            }
-            QListWidget::item:selected {
-                background-color: #2A2A2A;
-                border: 1px solid #0078D4;
-            }
-        """)
-        self.list_episodes.itemClicked.connect(self.on_episode_selected)
-        self.main_content_layout.addWidget(self.list_episodes)
-
-        self.scroll_area.setWidget(self.main_content)
-        self.stacked_widget.addWidget(self.scroll_area)
-
-        # ---------------- 3. FULLSCREEN PAGE (VIDEO 100%) ----------------
-        # Trang riêng cho chế độ toàn màn hình, video_container sẽ được reparent vào đây
+        # ============================================================
+        # 3. TRANG TOÀN MÀN HÌNH (FULLSCREEN PAGE - INDEX 2)
+        # ============================================================
         self.fullscreen_page = QWidget()
         self.fullscreen_page.setStyleSheet("background-color: #000000;")
         self.fullscreen_page_layout = QVBoxLayout(self.fullscreen_page)
         self.fullscreen_page_layout.setContentsMargins(0, 0, 0, 0)
-        self.fullscreen_page_layout.setSpacing(0)
-        self.stacked_widget.addWidget(self.fullscreen_page)  # index 2
+        self.stacked_widget.addWidget(self.fullscreen_page)
 
-        # Phím tắt Toàn màn hình & Phím điều khiển
-        QShortcut(QKeySequence("F"), self, self.toggle_fullscreen)
-        QShortcut(QKeySequence("Escape"), self, self.exit_fullscreen)
+        # Overlays điều khiển nổi
+        self.main_overlay = VideoOverlayPanel(self.video_container, self, mode="main")
+        self.fs_overlay = VideoOverlayPanel(self.video_container, self, mode="fullscreen")
+
+    def init_shortcuts(self):
+        """Đăng ký phím tắt thông minh và phổ biến nhất."""
         QShortcut(QKeySequence("Space"), self, self.toggle_play)
         QShortcut(QKeySequence("Left"), self, lambda: self.seek_relative(-5))
         QShortcut(QKeySequence("Right"), self, lambda: self.seek_relative(5))
-        QShortcut(QKeySequence("Ctrl+Left"), self, self.play_prev_episode)
-        QShortcut(QKeySequence("Ctrl+Right"), self, self.play_next_episode)
+        QShortcut(QKeySequence("Up"), self, lambda: self.change_volume(5))
+        QShortcut(QKeySequence("Down"), self, lambda: self.change_volume(-5))
+        QShortcut(QKeySequence("M"), self, self.toggle_mute)
+        QShortcut(QKeySequence("F"), self, self.toggle_fullscreen)
+        QShortcut(QKeySequence("Escape"), self, self.exit_fullscreen)
         QShortcut(QKeySequence("P"), self, self.play_prev_episode)
+        QShortcut(QKeySequence("Ctrl+Left"), self, self.play_prev_episode)
         QShortcut(QKeySequence("N"), self, self.play_next_episode)
+        QShortcut(QKeySequence("Ctrl+Right"), self, self.play_next_episode)
+        QShortcut(QKeySequence("B"), self, self.toggle_playlist_sidebar)
+        QShortcut(QKeySequence("Ctrl+O"), self, self.open_folder_dialog)
+        QShortcut(QKeySequence("O"), self, self.open_file_dialog)
+        QShortcut(QKeySequence("["), self, lambda: self.adjust_speed(-0.25))
+        QShortcut(QKeySequence("]"), self, lambda: self.adjust_speed(0.25))
 
-    # ---------------- HOVER VÀ CUỘN ----------------
-    def on_video_mouse_moved(self):
+    # ---------------- ĐIỀU HƯỚNG & MỞ PHIM ----------------
+    def show_landing_page(self):
+        self.player.pause()
+        self.landing_page.update_recent_history(self.history)
+        self.stacked_widget.setCurrentIndex(0)
+
+    def open_folder_dialog(self):
+        folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục phim")
+        if folder:
+            self.load_folder(folder)
+
+    def open_file_dialog(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Chọn tệp video", "", 
+            "Video Files (*.mp4 *.mkv *.avi *.mov *.flv);;All Files (*.*)"
+        )
+        if file_path:
+            self.play_single_file(file_path)
+
+    def handle_dropped_path(self, path: str):
+        if os.path.isdir(path):
+            self.load_folder(path)
+        elif os.path.isfile(path) and path.lower().endswith(VALID_VIDEO_EXTENSIONS):
+            self.play_single_file(path)
+
+    def load_folder(self, root_folder: str):
+        self.lbl_folder_path.setText(root_folder)
+        self.movies_data.clear()
+
+        try:
+            for root, dirs, files in os.walk(root_folder):
+                v_files = [os.path.join(root, f) for f in files if f.lower().endswith(VALID_VIDEO_EXTENSIONS)]
+                if v_files:
+                    rel = os.path.relpath(root, root_folder)
+                    name = "Tất cả tập phim" if rel == "." else rel
+                    self.movies_data[name] = sorted(v_files)
+        except Exception as e:
+            print(f"Lỗi đọc thư mục: {e}")
+
+        if not self.movies_data:
+            return
+
+        self.stacked_widget.setCurrentIndex(1)
+        self.attach_video_to_main()
+        self.sidebar.set_movies_data(self.movies_data, self.history)
+
+        first_group = list(self.movies_data.keys())[0]
+        if self.movies_data[first_group]:
+            self.play_video_file(self.movies_data[first_group][0])
+
+    def play_single_file(self, file_path: str):
+        folder = os.path.dirname(file_path)
+        self.lbl_folder_path.setText(folder)
+        filename = os.path.basename(file_path)
+        
+        # Quét các tệp cùng thư mục để tạo danh sách tập liền kề
+        sibling_videos = sorted([
+            os.path.join(folder, f) for f in os.listdir(folder) 
+            if f.lower().endswith(VALID_VIDEO_EXTENSIONS)
+        ])
+        if not sibling_videos:
+            sibling_videos = [file_path]
+
+        self.movies_data = {"Tập phim cùng thư mục": sibling_videos}
+        self.stacked_widget.setCurrentIndex(1)
+        self.attach_video_to_main()
+        self.sidebar.set_movies_data(self.movies_data, self.history)
+        self.play_video_file(file_path)
+
+    def play_video_file(self, file_path: str):
+        self.current_video_path = file_path
+        filename = os.path.basename(file_path)
+
+        self.attach_video_to_main()
+        self.player.load_media(file_path)
+        self.player.play()
+
+        # Cập nhật thông tin giao diện
+        self.controls_bar.update_title(filename)
+        self.fs_overlay.set_title(filename)
+        self.sidebar.select_episode(file_path)
+
+        # Khôi phục vị trí xem trước đó
+        history_info = self.history.get(file_path, {})
+        last_sec = history_info.get("pos", 0)
+        if last_sec > 1:
+            QTimer.singleShot(350, lambda: self.player.set_time(int(last_sec * 1000)))
+
+    # ---------------- ĐIỀU KHIỂN PHÁT VIDEO ----------------
+    def toggle_play(self):
+        self.player.toggle_play()
+
+    def play_prev_episode(self):
+        idx = self.sidebar.get_current_index()
+        if idx > 0:
+            prev_path = self.sidebar.get_episode_at_index(idx - 1)
+            if prev_path:
+                self.play_video_file(prev_path)
+
+    def play_next_episode(self):
+        idx = self.sidebar.get_current_index()
+        if idx >= 0 and idx < self.sidebar.get_total_count() - 1:
+            next_path = self.sidebar.get_episode_at_index(idx + 1)
+            if next_path:
+                self.play_video_file(next_path)
+
+    def seek_relative(self, seconds: float):
+        self.player.seek_relative(seconds)
+        if self.is_fullscreen_mode:
+            self.fs_overlay.show_overlay()
+        elif self.popout_window:
+            self.popout_window.show_overlay()
+        else:
+            self.main_overlay.show_overlay()
+
+    def seek_to_percentage(self, pos_pct: float):
+        self.player.seek_percentage(pos_pct)
+        self.is_user_seeking = False
+
+    def _on_slider_pressed(self):
+        self.is_user_seeking = True
+
+    def _on_slider_released(self):
+        self.is_user_seeking = False
+
+    def set_volume(self, val: int):
+        self.player.set_volume(val)
+
+    def change_volume(self, delta: int):
+        self.player.change_volume_relative(delta)
+
+    def toggle_mute(self):
+        self.player.toggle_mute()
+
+    def set_speed(self, rate: float):
+        self.player.set_rate(rate)
+
+    def adjust_speed(self, delta: float):
+        current_rate = self.player.get_rate()
+        self.player.set_rate(round(current_rate + delta, 2))
+
+    def toggle_playlist_sidebar(self):
+        """Bật / Tắt Playlist Sidebar (Chế độ xem Rạp chiếu phim)."""
+        self.is_playlist_visible = not self.is_playlist_visible
+        self.sidebar.setVisible(self.is_playlist_visible)
+        self.controls_bar.set_playlist_active(self.is_playlist_visible)
+        QTimer.singleShot(100, self.main_overlay.reposition)
+
+    # ---------------- HOVER & TIẾN ĐỘ ----------------
+    def _on_video_mouse_moved(self):
         if self.is_fullscreen_mode:
             self.fs_overlay.show_overlay()
         elif self.popout_window is None:
             self.main_overlay.show_overlay()
 
-    def on_video_mouse_left(self):
+    def _on_video_mouse_left(self):
         if not self.is_fullscreen_mode:
             self.main_overlay.check_and_hide_if_left()
 
-    def on_scroll_changed(self):
-        if not self.is_fullscreen_mode:
-            self.main_overlay.hide()
+    def _on_playback_state_changed(self, is_playing: bool):
+        self.controls_bar.update_play_button(is_playing)
+        self.main_overlay.update_play_button(is_playing)
+        self.fs_overlay.update_play_button(is_playing)
+        if self.popout_window:
+            self.popout_window.update_play_button(is_playing)
 
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        if not self.is_fullscreen_mode:
-            self.main_overlay.reposition()
+    def _on_volume_changed(self, volume: int, is_muted: bool):
+        self.controls_bar.update_volume(volume, is_muted)
+        self.fs_overlay.update_volume(volume, is_muted)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if not self.is_fullscreen_mode:
-            self.main_overlay.reposition()
-            # Video luôn chiếm 70% chiều cao cửa sổ chính
-            video_h = int(self.height() * 0.70)
-            self.video_container.setFixedHeight(max(video_h, 280))
-        else:
-            self.fs_overlay.reposition()
+    def _on_rate_changed(self, rate: float):
+        self.controls_bar.update_speed(rate)
 
-    # ---------------- CHUYỂN TẬP PHIM (PREV / NEXT EPISODE) ----------------
-    def get_current_episode_index(self) -> int:
-        for i in range(self.list_episodes.count()):
-            item = self.list_episodes.item(i)
-            if item and item.data(Qt.ItemDataRole.UserRole) == self.current_video_path:
-                return i
-        return -1
+    def _on_thumbnail_ready(self, video_path: str, thumb_path: str):
+        self.sidebar.update_thumbnail(video_path, thumb_path)
 
-    def play_prev_episode(self):
-        idx = self.get_current_episode_index()
-        if idx > 0:
-            self.list_episodes.setCurrentRow(idx - 1)
-            prev_item = self.list_episodes.item(idx - 1)
-            self.on_episode_selected(prev_item)
+    def _update_progress_tick(self):
+        # Tự động phát tập tiếp theo khi hết video
+        if self.player.get_state() == vlc.State.Ended:
+            self.play_next_episode()
+            return
 
-    def play_next_episode(self):
-        idx = self.get_current_episode_index()
-        if idx >= 0 and idx < self.list_episodes.count() - 1:
-            self.list_episodes.setCurrentRow(idx + 1)
-            next_item = self.list_episodes.item(idx + 1)
-            self.on_episode_selected(next_item)
+        if self.player.is_playing() and self.current_video_path:
+            total_ms = self.player.get_length()
+            current_ms = self.player.get_time()
 
-    # ---------------- FULLSCREEN VIDEO (TỨC THÌ, KHÔNG ĐỔI HWND) ----------------
+            if total_ms > 0:
+                current_sec = current_ms / 1000.0
+                total_sec = total_ms / 1000.0
+                progress_pct = (current_sec / total_sec) * 100.0
+                slider_val = int((current_ms / total_ms) * 1000)
+
+                if not self.is_user_seeking:
+                    self.controls_bar.update_slider(slider_val)
+                    self.fs_overlay.update_slider(slider_val)
+                    if self.popout_window:
+                        self.popout_window.overlay.update_slider(slider_val)
+
+                self.controls_bar.update_time(current_ms, total_ms)
+                
+                cur_str = PlayerController.format_time(current_ms)
+                tot_str = PlayerController.format_time(total_ms)
+                self.fs_overlay.update_time(cur_str, tot_str)
+                if self.popout_window:
+                    self.popout_window.overlay.update_time(cur_str, tot_str)
+
+                # Lưu lịch sử
+                self.history[self.current_video_path] = {
+                    "pos": current_sec,
+                    "pct": progress_pct
+                }
+                save_history(self.history)
+                self.sidebar.update_progress(self.current_video_path, progress_pct)
+
+    # ---------------- FULLSCREEN VIDEO ----------------
     def toggle_fullscreen(self):
         if self.is_fullscreen_mode:
             self.exit_fullscreen()
@@ -494,23 +466,23 @@ class VideoPlayerApp(QMainWindow):
     def enter_fullscreen(self):
         if self.is_fullscreen_mode:
             return
-        
+
         if self.popout_window is not None:
             self.restore_video_from_popout()
 
         self.is_fullscreen_mode = True
         self.main_overlay.hide()
 
-        # Reparent video_container lên fullscreen_page (index 2) → video chiếm 100% màn hình
         self.video_container.setParent(self.fullscreen_page)
         self.fullscreen_page_layout.addWidget(self.video_container)
         self.video_container.setMinimumHeight(0)
         self.video_container.setMaximumHeight(16777215)
+        self.video_container.show()
 
         filename = os.path.basename(self.current_video_path) if self.current_video_path else "Fluent Media Player"
         self.fs_overlay.set_title(filename)
         self.fs_overlay.set_target_widget(self.video_container)
-        self.fs_overlay.update_play_button(self.media_player.is_playing())
+        self.fs_overlay.update_play_button(self.player.is_playing())
 
         self.stacked_widget.setCurrentIndex(2)
         self.showFullScreen()
@@ -519,28 +491,23 @@ class VideoPlayerApp(QMainWindow):
     def exit_fullscreen(self):
         if not self.is_fullscreen_mode:
             return
-        
+
         self.is_fullscreen_mode = False
         self.fs_overlay.hide()
 
-        # Reparent video_container về lại video_area_widget trong scroll area
         self.video_container.setParent(self.video_area_widget)
         self.video_area_layout.insertWidget(0, self.video_container)
+        self.video_container.setMinimumHeight(300)
+        self.video_container.show()
+
         self.main_overlay.set_target_widget(self.video_container)
         self.fs_overlay.set_target_widget(self.video_container)
 
         self.stacked_widget.setCurrentIndex(1)
         self.showNormal()
+        QTimer.singleShot(150, self.main_overlay.reposition)
 
-        # Khôi phục tỷ lệ 70% sau khi thoát fullscreen
-        def restore_size():
-            video_h = int(self.height() * 0.70)
-            self.video_container.setFixedHeight(max(video_h, 280))
-            self.main_overlay.reposition()
-
-        QTimer.singleShot(150, restore_size)
-
-    # ---------------- POP-OUT VIDEO (REPARENTING CHUẨN XÁC) ----------------
+    # ---------------- POP-OUT VIDEO (MINI PLAYER) ----------------
     def open_popout_video(self):
         if self.popout_window is not None:
             self.popout_window.raise_()
@@ -553,222 +520,74 @@ class VideoPlayerApp(QMainWindow):
         self.main_overlay.hide()
         self.fs_overlay.hide()
         self.popout_window = FloatingVideoWindow(self)
-        
-        # Reparent video_container sang popout_window
+
+        self.video_container.setMinimumHeight(0)
+        self.video_container.setMaximumHeight(16777215)
         self.video_container.setParent(self.popout_window.video_holder)
         self.popout_window.video_holder_layout.addWidget(self.video_container)
-        
+        self.video_container.show()
+
         self.popout_placeholder.show()
-        self.popout_window.update_play_button(self.media_player.is_playing())
+        self.popout_window.update_play_button(self.player.is_playing())
         self.popout_window.show()
 
     def restore_video_from_popout(self):
-        if self.popout_window is not None:
-            popout_ref = self.popout_window
-            self.popout_window = None
-            popout_ref.close()
+        popout = self.popout_window
+        self.popout_window = None
 
-        # Reparent video_container về lại cửa sổ chính
+        # 1. Reparent video_container về lại cửa sổ chính TRƯỚC khi đóng popout
         self.video_container.setParent(self.video_area_widget)
         self.video_area_layout.insertWidget(0, self.video_container)
-        self.popout_placeholder.hide()
+        self.video_container.setMinimumHeight(300)
+        self.video_container.show()
 
+        # 2. Ẩn placeholder và gắn lại HWND chuẩn cho VLC
+        self.popout_placeholder.hide()
+        self.attach_video_to_main()
+
+        # 3. Gắn lại target cho Overlay và định vị
         self.main_overlay.set_target_widget(self.video_container)
         self.fs_overlay.set_target_widget(self.video_container)
         QTimer.singleShot(150, self.main_overlay.reposition)
 
+        # 4. Đóng popout window an toàn nếu còn mở
+        if popout is not None:
+            popout.close()
+
+        # 5. Kích hoạt cửa sổ chính nếu đang bị thu nhỏ
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
     def attach_video_to_main(self):
-        if sys.platform.startswith('win'):
-            self.media_player.set_hwnd(int(self.video_container.winId()))
+        self.player.set_hwnd(int(self.video_container.winId()))
 
-    # ---------------- LOGIC PHÁT VIDEO & QUẢN LÝ TẬP ----------------
-    def open_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Chọn thư mục phim")
-        if folder:
-            self.lbl_current_folder.setText(folder)
-            self.attach_video_to_main()
-            self.stacked_widget.setCurrentIndex(1)
-            self.scan_movies_safe(folder)
-
-    def scan_movies_safe(self, root_folder):
-        self.movies_data.clear()
-        self.list_movies.clear()
-        self.list_episodes.clear()
-
-        try:
-            for root, dirs, files in os.walk(root_folder):
-                video_files = [os.path.join(root, f) for f in files if f.lower().endswith(VALID_VIDEO_EXTENSIONS)]
-                if video_files:
-                    rel_path = os.path.relpath(root, root_folder)
-                    group_name = "Phim Gốc / Khác" if rel_path == "." else rel_path
-                    self.movies_data[group_name] = sorted(video_files)
-        except Exception as e:
-            print(f"Lỗi quét thư mục: {e}")
-
-        for group in self.movies_data.keys():
-            self.list_movies.addItem(group)
-
-        self.list_movies.update_height()
-
-        if self.list_movies.count() > 0:
-            self.list_movies.setCurrentRow(0)
-            self.on_movie_selected(self.list_movies.item(0))
-
-    def on_movie_selected(self, item):
-        group_name = item.text()
-        self.list_episodes.clear()
-        
-        videos = self.movies_data.get(group_name, [])
-        missing_thumbs = []
-
-        for file_path in videos:
-            filename = os.path.basename(file_path)
-            history_data = self.history.get(file_path, {})
-            progress_pct = history_data.get("pct", 0)
-
-            # Kiểm tra nhanh ảnh thumbnail trong cache
-            cached_thumb = get_cached_thumbnail(file_path)
-            if not cached_thumb:
-                missing_thumbs.append(file_path)
-
-            ep_widget = EpisodeItemWidget(filename, progress_pct, cached_thumb)
-            
-            list_item = QListWidgetItem(self.list_episodes)
-            list_item.setSizeHint(QSize(0, 84))
-            list_item.setData(Qt.ItemDataRole.UserRole, file_path)
-
-            self.list_episodes.addItem(list_item)
-            self.list_episodes.setItemWidget(list_item, ep_widget)
-
-        self.list_episodes.update_height()
-
-        # Đẩy danh sách video chưa có thumbnail cho worker chạy ngầm xử lý
-        if missing_thumbs:
-            self.thumb_worker.set_tasks(missing_thumbs)
-
-        # TỰ ĐỘNG CHỌN & PHÁT VIDEO ĐẦU TIÊN
-        if self.list_episodes.count() > 0:
-            self.list_episodes.setCurrentRow(0)
-            first_item = self.list_episodes.item(0)
-            self.on_episode_selected(first_item)
-
-    def on_thumbnail_ready(self, video_path, thumb_path):
-        """
-        Nhận tín hiệu từ Worker chạy ngầm khi tạo xong thumbnail và cập nhật giao diện.
-        """
-        for i in range(self.list_episodes.count()):
-            item = self.list_episodes.item(i)
-            if item and item.data(Qt.ItemDataRole.UserRole) == video_path:
-                widget = self.list_episodes.itemWidget(item)
-                if widget and hasattr(widget, 'set_thumbnail'):
-                    widget.set_thumbnail(thumb_path)
-                break
-
-    def on_episode_selected(self, item):
-        file_path = item.data(Qt.ItemDataRole.UserRole)
-        self.current_video_path = file_path
-
-        # Đảm bảo video render đúng vào video_container
-        if sys.platform.startswith('win'):
-            self.media_player.set_hwnd(int(self.video_container.winId()))
-
-        media = self.vlc_instance.media_new(file_path)
-        self.media_player.set_media(media)
-        self.media_player.video_set_mouse_input(False)
-        self.media_player.video_set_key_input(False)
-        self.media_player.play()
-        self.update_play_buttons(True)
-
-        history_data = self.history.get(file_path, {})
-        last_pos_sec = history_data.get("pos", 0)
-        QTimer.singleShot(350, lambda: self.media_player.set_time(int(last_pos_sec * 1000)))
-
-        filename = os.path.basename(file_path)
-        self.fs_overlay.set_title(filename)
-
-    def toggle_play(self):
-        if self.media_player.is_playing():
-            self.media_player.pause()
-            self.update_play_buttons(False)
+    # ---------------- SỰ KIỆN CỬA SỔ & DRAG DROP ----------------
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self.is_fullscreen_mode:
+            self.main_overlay.reposition()
         else:
-            self.media_player.play()
-            self.update_play_buttons(True)
+            self.fs_overlay.reposition()
 
-    def update_play_buttons(self, is_playing: bool):
-        self.btn_play.setText("❚❚" if is_playing else "▶")
-        self.main_overlay.update_play_button(is_playing)
-        self.fs_overlay.update_play_button(is_playing)
-        if self.popout_window:
-            self.popout_window.update_play_button(is_playing)
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        if not self.is_fullscreen_mode:
+            self.main_overlay.reposition()
 
-    def seek_relative(self, seconds):
-        if self.media_player.get_length() > 0:
-            current_time = self.media_player.get_time()
-            target_time = max(0, current_time + (seconds * 1000))
-            self.media_player.set_time(int(target_time))
-            if self.is_fullscreen_mode:
-                self.fs_overlay.show_overlay()
-            elif self.popout_window:
-                self.popout_window.show_overlay()
-            else:
-                self.main_overlay.show_overlay()
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
 
-    def on_slider_pressed(self):
-        self.is_user_seeking = True
-
-    def on_slider_released(self):
-        if self.media_player.get_length() > 0:
-            pos_pct = self.slider_progress.value() / 1000.0
-            self.media_player.set_position(pos_pct)
-        self.is_user_seeking = False
-
-    def seek_to_percentage(self, pos_pct: float):
-        if self.media_player.get_length() > 0:
-            self.media_player.set_position(pos_pct)
-        self.is_user_seeking = False
-
-    def update_ui_state(self):
-        # Tự động chuyển sang tập tiếp theo khi xem xong video
-        if self.media_player.get_state() == vlc.State.Ended:
-            self.play_next_episode()
-            return
-
-        if self.media_player.is_playing() and self.current_video_path:
-            total_ms = self.media_player.get_length()
-            current_ms = self.media_player.get_time()
-
-            if total_ms > 0:
-                current_sec = current_ms / 1000.0
-                total_sec = total_ms / 1000.0
-                progress_pct = (current_sec / total_sec) * 100
-                slider_val = int((current_ms / total_ms) * 1000)
-
-                if not self.is_user_seeking:
-                    self.slider_progress.setValue(slider_val)
-                    self.fs_overlay.update_slider(slider_val)
-                    if self.popout_window:
-                        self.popout_window.overlay.update_slider(slider_val)
-                
-                cur_str = f"{int(current_sec//60):02d}:{int(current_sec%60):02d}"
-                tot_str = f"{int(total_sec//60):02d}:{int(total_sec%60):02d}"
-                self.lbl_time.setText(f"{cur_str} / {tot_str}")
-                self.fs_overlay.update_time(cur_str, tot_str)
-                if self.popout_window:
-                    self.popout_window.overlay.update_time(cur_str, tot_str)
-
-                self.history[self.current_video_path] = {
-                    "pos": current_sec,
-                    "pct": progress_pct
-                }
-                save_history(self.history)
-
-                # Cập nhật thanh tiến độ trên danh sách tập
-                for i in range(self.list_episodes.count()):
-                    item = self.list_episodes.item(i)
-                    if item.data(Qt.ItemDataRole.UserRole) == self.current_video_path:
-                        widget = self.list_episodes.itemWidget(item)
-                        if widget and hasattr(widget, 'progress_bar'):
-                            widget.progress_bar.setValue(int(progress_pct))
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if os.path.exists(path):
+                self.handle_dropped_path(path)
+                event.acceptProposedAction()
 
     def closeEvent(self, event):
         self.main_overlay.hide()
@@ -776,6 +595,9 @@ class VideoPlayerApp(QMainWindow):
         if self.thumb_worker:
             self.thumb_worker.stop()
         if self.popout_window:
-            self.popout_window.close()
+            popout = self.popout_window
+            self.popout_window = None
+            popout.close()
+        self.player.stop()
         save_history(self.history)
         event.accept()

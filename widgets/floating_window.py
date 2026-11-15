@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtCore import Qt, QEvent
-from PyQt6.QtGui import QIcon
+from PyQt6.QtGui import QIcon, QWheelEvent
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from .overlay_panel import VideoOverlayPanel
 
@@ -8,8 +8,10 @@ _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", 
 
 class FloatingVideoWindow(QWidget):
     """
-    Cửa sổ Pop-out / Mini Player (Picture-in-Picture) luôn nổi trên các cửa sổ khác,
-    sử dụng VideoOverlayPanel độc lập tích hợp Seek Slider và nút điều khiển hiện đại.
+    Cửa sổ Pop-out / Mini Player (Picture-in-Picture) luôn nổi trên các cửa sổ khác:
+    - VideoOverlayPanel độc lập tích hợp Seek Slider và nút điều khiển
+    - Hỗ trợ cuộn chuột trên cửa sổ nổi để tăng/giảm âm lượng tức thì
+    - Đúp chuột hoặc bấm 'Thu hồi' để đưa video về cửa sổ chính
     """
     def __init__(self, parent_app):
         super().__init__()
@@ -46,6 +48,13 @@ class FloatingVideoWindow(QWidget):
         elif event.type() == QEvent.Type.MouseButtonDblClick:
             self.parent_app.restore_video_from_popout()
             return True
+        elif event.type() == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.parent_app.change_volume(5)
+            elif delta < 0:
+                self.parent_app.change_volume(-5)
+            return True
         return super().eventFilter(source, event)
 
     def moveEvent(self, event):
@@ -64,5 +73,7 @@ class FloatingVideoWindow(QWidget):
 
     def closeEvent(self, event):
         self.overlay.hide()
-        self.parent_app.restore_video_from_popout()
+        self.overlay.close()
+        if getattr(self.parent_app, "popout_window", None) is self:
+            self.parent_app.restore_video_from_popout()
         event.accept()
