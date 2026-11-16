@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "name": "image-1.png",
+      "sha256": "f5549933ac86b9033033198783e0d269b15a0a831e7a60eaf10a87fa6c5d4b4a"
+    },
+    {
+      "name": "image-2.png",
+      "sha256": "29f95ca3eeb9d4fdeb3471e92026de441cfddf2bf3ffede043f4bc7b57f18d0d"
+    },
+    {
+      "name": "image.png",
+      "sha256": "59b4daffe702e95ccae456b464b838b6192fdd43845ee8153e11a119f4671e78"
+    }
+  ],
+  "documents": {
+    "README.md": [
+      "image-1.png",
+      "image-2.png",
+      "image.png"
+    ]
+  },
+  "pending": {}
+}

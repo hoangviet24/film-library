@@ -94,8 +94,8 @@ class PlayerControlsBar(QFrame):
         self.btn_prev.clicked.connect(self.prev_clicked.emit)
         ctrl_row.addWidget(self.btn_prev)
 
-        self.btn_rewind = QPushButton("↺ 5s")
-        self.btn_rewind.setFixedHeight(36)
+        self.btn_rewind = QPushButton("⏪ 5s")
+        self.btn_rewind.setFixedSize(36, 36)
         self.btn_rewind.setStyleSheet(BTN_CONTROL_STYLE)
         self.btn_rewind.setToolTip("Tua lùi 5 giây (←)")
         self.btn_rewind.clicked.connect(self.rewind_clicked.emit)
@@ -108,8 +108,8 @@ class PlayerControlsBar(QFrame):
         self.btn_play.clicked.connect(self.play_clicked.emit)
         ctrl_row.addWidget(self.btn_play)
 
-        self.btn_forward = QPushButton("5s ↻")
-        self.btn_forward.setFixedHeight(36)
+        self.btn_forward = QPushButton("5s ⏩")
+        self.btn_forward.setFixedSize(36, 36)
         self.btn_forward.setStyleSheet(BTN_CONTROL_STYLE)
         self.btn_forward.setToolTip("Tua tiến 5 giây (→)")
         self.btn_forward.clicked.connect(self.forward_clicked.emit)
