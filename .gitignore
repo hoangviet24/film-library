@@ -1,8 +1,23 @@
-/__pycache__
-thumb_cache
-dist
-build
-venv_pack
-*.spec
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Application cache
+thumb_cache/
+
+# Application history
 *video_history.json
-VLC
+
+# Build artifacts
+dist/
+build/
+*.spec
+
+# Virtual Environment
+venv/
+venv_pack/
+.venv/
+
+# VLC
+VLC/
