@@ -77,24 +77,27 @@ SCROLLBAR_STYLE = f"""
 # Thanh trượt tua tiến độ video (Seek Slider)
 SEEK_SLIDER_STYLE = f"""
     QSlider::groove:horizontal {{
-        height: 5px;
-        background: rgba(255, 255, 255, 0.18);
-        border-radius: 2px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 3px;
     }}
     QSlider::sub-page:horizontal {{
         background: {COLOR_ACCENT};
-        border-radius: 2px;
+        border-radius: 3px;
     }}
     QSlider::handle:horizontal {{
         background: #FFFFFF;
         width: 14px;
         height: 14px;
-        margin: -5px 0;
+        margin: -4px 0;
         border-radius: 7px;
     }}
     QSlider::handle:horizontal:hover {{
         background: #FFFFFF;
-        transform: scale(1.25);
+        width: 16px;
+        height: 16px;
+        margin: -5px 0;
+        border-radius: 8px;
     }}
 """
 
@@ -124,23 +127,29 @@ VOLUME_SLIDER_STYLE = f"""
 # Nút điều khiển tiêu chuẩn (Icon / Text Button)
 BTN_CONTROL_STYLE = f"""
     QPushButton {{
-        background-color: {COLOR_BG_CARD};
+        background-color: rgba(255, 255, 255, 0.05);
         color: {COLOR_TEXT_PRIMARY};
-        border: 1px solid {COLOR_BORDER_SUBTLE};
-        border-radius: 7px;
-        padding: 6px 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        padding: 0px 8px;
         font-size: 13px;
         font-weight: 500;
+        height: 34px;
+        min-height: 34px;
+        max-height: 34px;
     }}
+
     QPushButton:hover {{
-        background-color: {COLOR_BG_HOVER};
-        border-color: {COLOR_BORDER_HOVER};
+        background-color: rgba(255, 255, 255, 0.12);
+        border-color: rgba(255, 255, 255, 0.22);
     }}
+
     QPushButton:pressed {{
-        background-color: #1F1F1F;
+        background-color: rgba(255, 255, 255, 0.03);
     }}
+
     QPushButton:disabled {{
-        background-color: #151515;
+        background-color: transparent;
         color: {COLOR_TEXT_MUTED};
         border-color: transparent;
     }}
@@ -165,15 +174,21 @@ BTN_PRIMARY_STYLE = f"""
     }}
 """
 
-# Nút Play/Pause chính (Nổi bật hình tròn)
+# Nút Play/Pause chính (Nổi bật hình tròn chuẩn 36px đồng bộ)
 BTN_PLAY_STYLE = f"""
     QPushButton {{
         background-color: {COLOR_ACCENT};
         color: #FFFFFF;
         border: none;
-        border-radius: 21px;
-        font-size: 18px;
+        border-radius: 18px;
+        font-size: 15px;
         font-weight: bold;
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        min-height: 36px;
+        max-width: 36px;
+        max-height: 36px;
     }}
     QPushButton:hover {{
         background-color: {COLOR_ACCENT_HOVER};

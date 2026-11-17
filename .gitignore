@@ -1,23 +1,10 @@
-# Python cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Application cache
+/__pycache__
 thumb_cache/
-
-# Application history
-*video_history.json
-
-# Build artifacts
 dist/
 build/
-*.spec
-
-# Virtual Environment
-venv/
+release/
 venv_pack/
-.venv/
-
-# VLC
+video_history.json
 VLC/
+/*.spec
+!/app.spec

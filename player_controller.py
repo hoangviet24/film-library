@@ -76,21 +76,36 @@ class PlayerController(QObject):
         return self.media_player.get_time()
 
     def set_time(self, ms: int):
-        self.media_player.set_time(int(ms))
+        try:
+            if self.media_player:
+                self.media_player.set_time(int(ms))
+        except Exception as e:
+            print(f"Error in set_time: {e}")
 
     def get_length(self) -> int:
-        return self.media_player.get_length()
+        try:
+            if self.media_player:
+                return self.media_player.get_length()
+        except Exception:
+            pass
+        return 0
 
     def seek_relative(self, seconds: float):
-        total_len = self.get_length()
-        if total_len > 0:
-            current_ms = self.get_time()
-            target_ms = max(0, min(total_len, current_ms + int(seconds * 1000)))
-            self.set_time(target_ms)
+        try:
+            total_len = self.get_length()
+            if total_len > 0:
+                current_ms = self.get_time()
+                target_ms = max(0, min(total_len, current_ms + int(seconds * 1000)))
+                self.set_time(target_ms)
+        except Exception as e:
+            print(f"Error in seek_relative: {e}")
 
     def seek_percentage(self, pos_pct: float):
-        if self.get_length() > 0:
-            self.media_player.set_position(max(0.0, min(1.0, pos_pct)))
+        try:
+            if self.media_player and self.get_length() > 0:
+                self.media_player.set_position(max(0.0, min(1.0, float(pos_pct))))
+        except Exception as e:
+            print(f"Error in seek_percentage: {e}")
 
     def get_volume(self) -> int:
         return self._volume
