@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QIcon, QWheelEvent
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from .overlay_panel import VideoOverlayPanel
-
+from utils import get_app_icon
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
 
 class FloatingVideoWindow(QWidget):
@@ -22,9 +22,8 @@ class FloatingVideoWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Window)
         self.setStyleSheet("background-color: #000000;")
 
-        # Gắn icon cho cửa sổ Pop-out
-        if os.path.exists(_LOGO_PATH):
-            self.setWindowIcon(QIcon(_LOGO_PATH))
+        # Gắn biểu tượng cho cửa sổ Pop-out
+        self.setWindowIcon(get_app_icon())
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(0, 0, 0, 0)

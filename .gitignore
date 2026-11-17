@@ -1,8 +1,10 @@
 /__pycache__
-thumb_cache
-dist
-build
-venv_pack
-*.spec
-*video_history.json
-VLC
+thumb_cache/
+dist/
+build/
+release/
+venv_pack/
+video_history.json
+VLC/
+/*.spec
+!/app.spec

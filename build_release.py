@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Fluent Media Player - Automated Build & Release Orchestrator
+Performs PyInstaller compilation, Inno Setup installer creation,
+and generates release artifacts with build-info metadata.
+"""
+
+import os
+import sys
+import shutil
+import subprocess
+import hashlib
+import time
+from datetime import datetime
+
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_NAME = "Fluent Media Player"
+APP_EXE_NAME = "FluentMediaPlayer.exe"
+VERSION = "2.0.0"
+DIST_DIR = os.path.join(ROOT_DIR, "dist", "FluentMediaPlayer")
+BUILD_DIR = os.path.join(ROOT_DIR, "build")
+RELEASE_DIR = os.path.join(ROOT_DIR, "release")
+INSTALLER_DIR = os.path.join(RELEASE_DIR, "installer")
+
+
+def log(msg: str):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def find_iscc() -> str | None:
+    """Tìm đường dẫn trình biên dịch Inno Setup (ISCC.exe)."""
+    # 1. Kiểm tra PATH
+    path_iscc = shutil.which("iscc") or shutil.which("ISCC")
+    if path_iscc and os.path.exists(path_iscc):
+        return path_iscc
+
+    # 2. Kiểm tra các thư mục cài đặt tiêu chuẩn
+    candidate_paths = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Inno Setup 6\ISCC.exe"),
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 5\ISCC.exe"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe"),
+        os.path.expandvars(r"%ProgramFiles%\Inno Setup 5\ISCC.exe"),
+    ]
+    for p in candidate_paths:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def calculate_sha256(filepath: str) -> str:
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def get_git_commit() -> str:
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT_DIR,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if res.returncode == 0:
+            return res.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def step_preflight_checks():
+    log("=== BƯỚC 1: KIỂM TRA MÔI TRƯỜNG VÀ TÀI NGUYÊN ===")
+    assert os.path.exists(os.path.join(ROOT_DIR, "app.spec")), "Thiếu tệp app.spec"
+    assert os.path.exists(os.path.join(ROOT_DIR, "file_version_info.txt")), "Thiếu tệp file_version_info.txt"
+    assert os.path.exists(os.path.join(ROOT_DIR, "assets", "logo.ico")), "Thiếu tệp assets/logo.ico"
+    assert os.path.exists(os.path.join(ROOT_DIR, "assets", "logo-transparent.png")), "Thiếu tệp assets/logo-transparent.png"
+    assert os.path.exists(os.path.join(ROOT_DIR, "vlc")), "Thiếu thư mục vlc"
+    assert os.path.exists(os.path.join(ROOT_DIR, "installer.iss")), "Thiếu tệp installer.iss"
+
+    iscc_path = find_iscc()
+    if iscc_path:
+        log(f"✓ Tìm thấy Inno Setup: {iscc_path}")
+    else:
+        log("⚠ Cảnh báo: Không tìm thấy ISCC.exe (Inno Setup). Sẽ chỉ đóng gói PyInstaller.")
+    return iscc_path
+
+
+def step_clean_temp_build():
+    log("=== BƯỚC 2: DỌN DẸP THƯ MỤC BUILD CŨ ===")
+    for folder in [BUILD_DIR, os.path.join(ROOT_DIR, "dist")]:
+        if os.path.exists(folder):
+            try:
+                shutil.rmtree(folder)
+                log(f"✓ Đã dọn dẹp: {folder}")
+            except Exception as e:
+                log(f"⚠ Không thể dọn dẹp {folder}: {e}")
+
+
+def step_build_pyinstaller():
+    log("=== BƯỚC 3: BIÊN DỊCH ỨNG DỤNG BẰNG PYINSTALLER ===")
+    cmd = [
+        sys.executable, "-m", "PyInstaller",
+        "app.spec",
+        "--clean",
+        "--noconfirm"
+    ]
+    log(f"Chạy lệnh: {' '.join(cmd)}")
+    t0 = time.time()
+    res = subprocess.run(cmd, cwd=ROOT_DIR)
+    if res.returncode != 0:
+        log("❌ LỖI: Biên dịch PyInstaller thất bại!")
+        sys.exit(1)
+    log(f"✓ Hoàn tất PyInstaller trong {time.time() - t0:.1f} giây")
+
+    exe_path = os.path.join(DIST_DIR, APP_EXE_NAME)
+    if not os.path.exists(exe_path):
+        log(f"❌ LỖI: Không tìm thấy tệp thực thi đầu ra: {exe_path}")
+        sys.exit(1)
+    log(f"✓ Tệp thực thi đầu ra: {exe_path} ({os.path.getsize(exe_path):,} bytes)")
+
+
+def step_build_installer(iscc_path: str):
+    log("=== BƯỚC 4: TẠO BỘ CÀI ĐẶT WINDOWS (INNO SETUP) ===")
+    if not iscc_path:
+        log("Bỏ qua bước tạo bộ cài đặt vì không tìm thấy ISCC.exe.")
+        return None
+
+    os.makedirs(INSTALLER_DIR, exist_ok=True)
+    iss_file = os.path.join(ROOT_DIR, "installer.iss")
+
+    cmd = [iscc_path, iss_file]
+    log(f"Chạy lệnh: {' '.join(cmd)}")
+    t0 = time.time()
+    res = subprocess.run(cmd, cwd=ROOT_DIR)
+    if res.returncode != 0:
+        log("❌ LỖI: Đóng gói Inno Setup thất bại!")
+        sys.exit(1)
+
+    setup_exe = os.path.join(INSTALLER_DIR, "FluentMediaPlayer-Setup.exe")
+    if not os.path.exists(setup_exe):
+        log(f"❌ LỖI: Không tìm thấy bộ cài đặt: {setup_exe}")
+        sys.exit(1)
+
+    log(f"✓ Hoàn tất Inno Setup trong {time.time() - t0:.1f} giây")
+    log(f"✓ Bộ cài đặt đầu ra: {setup_exe} ({os.path.getsize(setup_exe):,} bytes)")
+    return setup_exe
+
+
+def step_organize_release(setup_exe: str | None):
+    log("=== BƯỚC 5: ĐÓNG GÓI THƯ MỤC RELEASE VÀ BUILD-INFO ===")
+    os.makedirs(RELEASE_DIR, exist_ok=True)
+
+    # 1. Sao chép bản standalone vào release/FluentMediaPlayer
+    rel_app_dir = os.path.join(RELEASE_DIR, "FluentMediaPlayer")
+    if os.path.exists(rel_app_dir):
+        shutil.rmtree(rel_app_dir)
+    shutil.copytree(DIST_DIR, rel_app_dir)
+    log(f"✓ Đã sao chép ứng dụng standalone sang: {rel_app_dir}")
+
+    # 2. Tạo build-info.txt
+    build_info_path = os.path.join(RELEASE_DIR, "build-info.txt")
+    exe_path = os.path.join(rel_app_dir, APP_EXE_NAME)
+    exe_size_str = f"{os.path.getsize(exe_path):,} bytes" if os.path.exists(exe_path) else "N/A"
+    exe_hash = calculate_sha256(exe_path) if os.path.exists(exe_path) else "N/A"
+    setup_size_str = f"{os.path.getsize(setup_exe):,} bytes" if setup_exe and os.path.exists(setup_exe) else "N/A"
+    setup_hash = calculate_sha256(setup_exe) if setup_exe and os.path.exists(setup_exe) else "N/A"
+    git_commit = get_git_commit()
+
+    info_text = f"""================================================================================
+FLUENT MEDIA PLAYER - BUILD & RELEASE INFORMATION
+================================================================================
+Product Name         : {APP_NAME}
+Product Version      : {VERSION}
+Build Timestamp      : {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
+Git Commit           : {git_commit}
+Python Environment   : Python {sys.version.split()[0]} ({sys.platform})
+Packaging Type       : Windows Standalone (onedir) + Inno Setup Installer
+
+FILES & CHECKSUMS:
+--------------------------------------------------------------------------------
+1. Standalone Application Directory:
+   Path   : release/FluentMediaPlayer/
+   Binary : release/FluentMediaPlayer/{APP_EXE_NAME}
+   Size   : {exe_size_str}
+   SHA256 : {exe_hash}
+
+2. Windows Installer:
+   Path   : release/installer/FluentMediaPlayer-Setup.exe
+   Size   : {setup_size_str}
+   SHA256 : {setup_hash}
+
+SYSTEM REQUIREMENTS:
+--------------------------------------------------------------------------------
+- OS: Windows 10 (1809+) or Windows 11 (64-bit)
+- Python Installed: Not required (fully self-contained runtime)
+- Audio/Video Codecs: Embedded VLC engine (H.264, HEVC, VP9, AV1, MPEG, AAC, etc.)
+================================================================================
+"""
+    with open(build_info_path, "w", encoding="utf-8") as f:
+        f.write(info_text.strip() + "\n")
+    log(f"✓ Đã tạo build-info.txt: {build_info_path}")
+
+
+def main():
+    log("==================================================")
+    log("BẮT ĐẦU QUY TRÌNH ĐÓNG GÓI VÀ TẠO BỘ CÀI ĐẶT WINDOWS")
+    log("==================================================")
+    t_start = time.time()
+
+    iscc_path = step_preflight_checks()
+    step_clean_temp_build()
+    step_build_pyinstaller()
+    setup_exe = step_build_installer(iscc_path)
+    step_organize_release(setup_exe)
+
+    log("==================================================")
+    log(f"🎉 TẤT CẢ CÁC BƯỚC ĐÓNG GÓI HOÀN TẤT THÀNH CÔNG TRONG {time.time() - t_start:.1f}s!")
+    log("==================================================")
+
+
+if __name__ == "__main__":
+    main()

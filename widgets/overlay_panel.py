@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
     QMenu
 )
 from .clickable_slider import ClickableSlider
+from .preview_popup import VideoThumbnailPreview
 from styles import (
     SEEK_SLIDER_STYLE, VOLUME_SLIDER_STYLE, COLOR_ACCENT, 
     COLOR_ACCENT_HOVER, COLOR_ACCENT_PRESSED
@@ -17,7 +18,8 @@ class VideoOverlayPanel(QWidget):
     Hỗ trợ 3 chế độ: "main", "fullscreen", "popout".
     """
     def __init__(self, target_widget, parent_app, mode="main"):
-        super().__init__(None, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        window_flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+        super().__init__(None, window_flags)
         self.target_widget = target_widget
         self.parent_app = parent_app
         self.mode = mode  # "main", "fullscreen", "popout"
@@ -25,13 +27,14 @@ class VideoOverlayPanel(QWidget):
         
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.setStyleSheet("background-color: transparent;")
+        self.setStyleSheet("background-color: transparent; border: none; outline: none;")
 
+        self.preview_popup = VideoThumbnailPreview(self)
         self.init_ui()
 
         self.hide_timer = QTimer(self)
         self.hide_timer.setInterval(2500)
-        self.hide_timer.timeout.connect(self.hide)
+        self.hide_timer.timeout.connect(self._on_hide_timeout)
 
         self.setMouseTracking(True)
 
@@ -145,6 +148,8 @@ class VideoOverlayPanel(QWidget):
             self.slider.sliderPressed.connect(self.on_slider_pressed)
             self.slider.sliderReleased.connect(self.on_slider_released)
             self.slider.clicked_to_percentage.connect(self.parent_app.seek_to_percentage)
+            self.slider.hover_moved.connect(self._on_slider_hover_moved)
+            self.slider.hover_left.connect(self._on_slider_hover_left)
             bot_layout.addWidget(self.slider)
 
             bottom_row = QHBoxLayout()
@@ -375,6 +380,42 @@ class VideoOverlayPanel(QWidget):
             return target_rect.contains(QCursor.pos())
         return False
 
+    def _on_slider_hover_moved(self, val: int, pct: float, global_pos: QPoint):
+        if not hasattr(self.parent_app, "player"):
+            return
+        total_ms = self.parent_app.player.get_length()
+        if total_ms <= 0:
+            return
+        hover_ms = int(pct * total_ms)
+        slider_top_y = self.slider.mapToGlobal(QPoint(0, 0)).y()
+        video_path = getattr(self.parent_app, "current_video_path", None)
+        pixmap = None
+        if video_path and hasattr(self.parent_app, "preview_manager"):
+            pm = self.parent_app.preview_manager
+            bucket_sec = int(round(hover_ms / 2000.0) * 2)
+            pixmap = pm.get_cached_preview(video_path, bucket_sec)
+            if not pixmap:
+                pm.request_preview(video_path, hover_ms)
+        self.preview_popup.show_preview(global_pos.x(), slider_top_y, hover_ms, pixmap)
+
+    def _on_slider_hover_left(self):
+        if hasattr(self, 'preview_popup'):
+            self.preview_popup.hide_preview()
+
+    def update_preview_thumbnail(self, video_path: str, bucket_sec: int, pixmap):
+        if hasattr(self, 'preview_popup') and self.preview_popup.isVisible():
+            self.preview_popup.set_thumbnail(pixmap)
+
+    def _on_hide_timeout(self):
+        if self.is_slider_seeking:
+            self.hide_timer.start()
+            return
+        if hasattr(self, 'preview_popup'):
+            self.preview_popup.hide_preview()
+        self.hide()
+        if self.mode == "fullscreen" and hasattr(self.parent_app, "hide_fullscreen_cursor"):
+            self.parent_app.hide_fullscreen_cursor()
+
     def show_overlay(self):
         if not self.target_widget or not self.target_widget.isVisible():
             self.hide()
@@ -385,6 +426,9 @@ class VideoOverlayPanel(QWidget):
             self.hide()
             return
 
+        if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
+            self.parent_app.show_fullscreen_cursor()
+
         self.reposition()
         self.show()
         self.raise_()
@@ -394,8 +438,16 @@ class VideoOverlayPanel(QWidget):
         if not self.is_cursor_over_video():
             self.hide()
 
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
+            self.parent_app.show_fullscreen_cursor()
+        self.hide_timer.start()
+
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
+        if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
+            self.parent_app.show_fullscreen_cursor()
         self.hide_timer.start()
 
     def leaveEvent(self, event):
@@ -413,13 +465,20 @@ class VideoOverlayPanel(QWidget):
 
     def on_slider_pressed(self):
         self.is_slider_seeking = True
-        self.parent_app.on_slider_pressed()
+        if hasattr(self.parent_app, "_on_slider_pressed"):
+            self.parent_app._on_slider_pressed()
+        elif hasattr(self.parent_app, "on_slider_pressed"):
+            self.parent_app.on_slider_pressed()
 
     def on_slider_released(self):
         if hasattr(self, 'slider'):
             pos_pct = self.slider.value() / 1000.0
             self.parent_app.seek_to_percentage(pos_pct)
         self.is_slider_seeking = False
+        if hasattr(self.parent_app, "_on_slider_released"):
+            self.parent_app._on_slider_released()
+        elif hasattr(self.parent_app, "on_slider_released"):
+            self.parent_app.on_slider_released()
 
     def update_slider(self, val_0_to_1000):
         if hasattr(self, 'slider') and not self.is_slider_seeking:

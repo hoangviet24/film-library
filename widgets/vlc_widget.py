@@ -14,11 +14,14 @@ class VlcVideoWidget(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setLineWidth(0)
+        self.setMidLineWidth(0)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.setMouseTracking(True)
-        self.setStyleSheet("background-color: #000000;")
+        self.setStyleSheet("background-color: #000000; border: none; outline: none; margin: 0px; padding: 0px;")
 
     def paintEngine(self):
         # Trả về None để loại trừ hoàn toàn engine vẽ phần mềm của Qt

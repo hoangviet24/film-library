@@ -1,7 +1,7 @@
 import os
 import sys
 import vlc
-from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtCore import Qt, QTimer, QSize, QEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
     QFileDialog, QFrame, QStackedWidget, QLabel, QPushButton
@@ -15,7 +15,7 @@ from styles import (
     MAIN_WINDOW_STYLE, CARD_STYLE, BTN_CONTROL_STYLE, 
     COLOR_ACCENT, COLOR_BG_APP
 )
-from utils import ThumbnailWorker, load_history, save_history
+from utils import ThumbnailWorker, load_history, save_history, PreviewManager, setup_window_icon
 from widgets import (
     LandingPage,
     PlayerControlsBar,
@@ -42,6 +42,7 @@ class VideoPlayerApp(QMainWindow):
         self.setMinimumSize(850, 550)
         self.setStyleSheet(MAIN_WINDOW_STYLE)
         self.setAcceptDrops(True)
+        setup_window_icon(self)
 
         # Bộ điều khiển VLC Player
         self.player = PlayerController(self)
@@ -57,11 +58,17 @@ class VideoPlayerApp(QMainWindow):
         self.is_user_seeking = False
         self.is_fullscreen_mode = False
         self.is_playlist_visible = True
+        self._was_maximized = False
+        self._cursor_hidden = False
 
         # Worker tạo ảnh thu nhỏ (Thumbnail) bất đồng bộ
         self.thumb_worker = ThumbnailWorker()
         self.thumb_worker.thumbnail_ready.connect(self._on_thumbnail_ready)
         self.thumb_worker.start()
+
+        # Quản lý xem trước Thumbnail (Seekbar Hover Preview - FEATURE-01)
+        self.preview_manager = PreviewManager(self)
+        self.preview_manager.preview_ready.connect(self._on_preview_ready)
 
         self.init_ui()
         self.init_shortcuts()
@@ -74,6 +81,9 @@ class VideoPlayerApp(QMainWindow):
 
     def init_ui(self):
         self.stacked_widget = QStackedWidget()
+        self.stacked_widget.setFrameShape(QFrame.Shape.NoFrame)
+        self.stacked_widget.setLineWidth(0)
+        self.stacked_widget.setStyleSheet("QStackedWidget { background-color: #000000; border: none; margin: 0px; padding: 0px; }")
         self.setCentralWidget(self.stacked_widget)
 
         # ============================================================
@@ -213,9 +223,12 @@ class VideoPlayerApp(QMainWindow):
         # 3. TRANG TOÀN MÀN HÌNH (FULLSCREEN PAGE - INDEX 2)
         # ============================================================
         self.fullscreen_page = QWidget()
-        self.fullscreen_page.setStyleSheet("background-color: #000000;")
+        self.fullscreen_page.setStyleSheet("background-color: #000000; border: none; margin: 0px; padding: 0px;")
         self.fullscreen_page_layout = QVBoxLayout(self.fullscreen_page)
         self.fullscreen_page_layout.setContentsMargins(0, 0, 0, 0)
+        self.fullscreen_page_layout.setSpacing(0)
+        self.fullscreen_page.setMouseTracking(True)
+        self.fullscreen_page.installEventFilter(self)
         self.stacked_widget.addWidget(self.fullscreen_page)
 
         # Overlays điều khiển nổi
@@ -315,6 +328,7 @@ class VideoPlayerApp(QMainWindow):
         self.current_video_path = file_path
         filename = os.path.basename(file_path)
 
+        self.preview_manager.set_video(file_path)
         self.attach_video_to_main()
         self.player.load_media(file_path)
         self.player.play()
@@ -367,6 +381,40 @@ class VideoPlayerApp(QMainWindow):
     def _on_slider_released(self):
         self.is_user_seeking = False
 
+    def on_slider_pressed(self):
+        self._on_slider_pressed()
+
+    def on_slider_released(self):
+        self._on_slider_released()
+
+    def show_fullscreen_cursor(self):
+        if self._cursor_hidden:
+            self._cursor_hidden = False
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self.video_container.setCursor(Qt.CursorShape.ArrowCursor)
+            self.fullscreen_page.setCursor(Qt.CursorShape.ArrowCursor)
+            if hasattr(self, 'fs_overlay') and self.fs_overlay:
+                self.fs_overlay.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def hide_fullscreen_cursor(self):
+        if not self.is_fullscreen_mode:
+            return
+        if not self.is_user_seeking:
+            self._cursor_hidden = True
+            self.setCursor(Qt.CursorShape.BlankCursor)
+            self.video_container.setCursor(Qt.CursorShape.BlankCursor)
+            self.fullscreen_page.setCursor(Qt.CursorShape.BlankCursor)
+            if hasattr(self, 'fs_overlay') and self.fs_overlay:
+                self.fs_overlay.setCursor(Qt.CursorShape.BlankCursor)
+
+    def restore_cursor(self):
+        self._cursor_hidden = False
+        self.unsetCursor()
+        self.video_container.unsetCursor()
+        self.fullscreen_page.unsetCursor()
+        if hasattr(self, 'fs_overlay') and self.fs_overlay:
+            self.fs_overlay.unsetCursor()
+
     def set_volume(self, val: int):
         self.player.set_volume(val)
 
@@ -393,6 +441,7 @@ class VideoPlayerApp(QMainWindow):
     # ---------------- HOVER & TIẾN ĐỘ ----------------
     def _on_video_mouse_moved(self):
         if self.is_fullscreen_mode:
+            self.show_fullscreen_cursor()
             self.fs_overlay.show_overlay()
         elif self.popout_window is None:
             self.main_overlay.show_overlay()
@@ -400,6 +449,15 @@ class VideoPlayerApp(QMainWindow):
     def _on_video_mouse_left(self):
         if not self.is_fullscreen_mode:
             self.main_overlay.check_and_hide_if_left()
+
+    def eventFilter(self, watched, event):
+        if hasattr(self, 'fullscreen_page') and watched == self.fullscreen_page:
+            if event.type() in (QEvent.Type.MouseMove, QEvent.Type.Enter):
+                self._on_video_mouse_moved()
+            elif event.type() == QEvent.Type.MouseButtonDblClick:
+                self.toggle_fullscreen()
+                return True
+        return super().eventFilter(watched, event)
 
     def _on_playback_state_changed(self, is_playing: bool):
         self.controls_bar.update_play_button(is_playing)
@@ -417,6 +475,10 @@ class VideoPlayerApp(QMainWindow):
 
     def _on_thumbnail_ready(self, video_path: str, thumb_path: str):
         self.sidebar.update_thumbnail(video_path, thumb_path)
+
+    def _on_preview_ready(self, video_path: str, bucket_sec: int, pixmap):
+        self.controls_bar.update_preview_thumbnail(video_path, bucket_sec, pixmap)
+        self.fs_overlay.update_preview_thumbnail(video_path, bucket_sec, pixmap)
 
     def _update_progress_tick(self):
         # Tự động phát tập tiếp theo khi hết video
@@ -467,6 +529,9 @@ class VideoPlayerApp(QMainWindow):
         if self.is_fullscreen_mode:
             return
 
+        # Ghi nhớ trạng thái phóng to trước khi vào Fullscreen (BUG-01 Fix)
+        self._was_maximized = self.isMaximized()
+
         if self.popout_window is not None:
             self.restore_video_from_popout()
 
@@ -478,6 +543,7 @@ class VideoPlayerApp(QMainWindow):
         self.video_container.setMinimumHeight(0)
         self.video_container.setMaximumHeight(16777215)
         self.video_container.show()
+        self.attach_video_to_main()
 
         filename = os.path.basename(self.current_video_path) if self.current_video_path else "Fluent Media Player"
         self.fs_overlay.set_title(filename)
@@ -486,6 +552,7 @@ class VideoPlayerApp(QMainWindow):
 
         self.stacked_widget.setCurrentIndex(2)
         self.showFullScreen()
+        self.show_fullscreen_cursor()
         QTimer.singleShot(150, self.fs_overlay.show_overlay)
 
     def exit_fullscreen(self):
@@ -493,18 +560,26 @@ class VideoPlayerApp(QMainWindow):
             return
 
         self.is_fullscreen_mode = False
+        self.restore_cursor()
         self.fs_overlay.hide()
 
         self.video_container.setParent(self.video_area_widget)
         self.video_area_layout.insertWidget(0, self.video_container)
         self.video_container.setMinimumHeight(300)
         self.video_container.show()
+        self.attach_video_to_main()
 
         self.main_overlay.set_target_widget(self.video_container)
         self.fs_overlay.set_target_widget(self.video_container)
 
         self.stacked_widget.setCurrentIndex(1)
-        self.showNormal()
+        
+        # Khôi phục trạng thái cửa sổ chính xác (BUG-01 Fix)
+        if getattr(self, "_was_maximized", False):
+            self.showMaximized()
+        else:
+            self.showNormal()
+
         QTimer.singleShot(150, self.main_overlay.reposition)
 
     # ---------------- POP-OUT VIDEO (MINI PLAYER) ----------------
@@ -526,6 +601,9 @@ class VideoPlayerApp(QMainWindow):
         self.video_container.setParent(self.popout_window.video_holder)
         self.popout_window.video_holder_layout.addWidget(self.video_container)
         self.video_container.show()
+
+        # Cập nhật Win32 HWND mới cho VLC khi reparent sang Popout (BUG-05 Fix)
+        self.player.set_hwnd(int(self.video_container.winId()))
 
         self.popout_placeholder.show()
         self.popout_window.update_play_button(self.player.is_playing())
@@ -565,6 +643,10 @@ class VideoPlayerApp(QMainWindow):
         self.player.set_hwnd(int(self.video_container.winId()))
 
     # ---------------- SỰ KIỆN CỬA SỔ & DRAG DROP ----------------
+    def showEvent(self, event):
+        super().showEvent(event)
+        setup_window_icon(self)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not self.is_fullscreen_mode:
@@ -592,6 +674,8 @@ class VideoPlayerApp(QMainWindow):
     def closeEvent(self, event):
         self.main_overlay.hide()
         self.fs_overlay.hide()
+        if hasattr(self, 'preview_manager') and self.preview_manager:
+            self.preview_manager.stop()
         if self.thumb_worker:
             self.thumb_worker.stop()
         if self.popout_window:

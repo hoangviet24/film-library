@@ -8,6 +8,7 @@ from .sidebar_widget import PlaylistSidebar
 from .overlay_panel import VideoOverlayPanel
 from .smooth_scroll import SmoothScrollArea
 from .vlc_widget import VlcVideoWidget
+from .preview_popup import VideoThumbnailPreview
 
 __all__ = [
     "AutoFitListWidget",
@@ -19,5 +20,6 @@ __all__ = [
     "PlaylistSidebar",
     "VideoOverlayPanel",
     "SmoothScrollArea",
-    "VlcVideoWidget"
+    "VlcVideoWidget",
+    "VideoThumbnailPreview"
 ]
