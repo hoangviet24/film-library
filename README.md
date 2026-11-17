@@ -1,116 +1,223 @@
-# Fluent Media App
+# Fluent Media Player
 
-Đã cất công xây dựng cả một bộ sưu tập phim mà cứ hết tập lại phải thoát trình phát rồi tự đi tìm tập tiếp theo? Fluent Media Player giúp bạn mở thư mục phim và chọn tập ngay trong danh sách để xem tiếp.
+**Your Movies. Your Library. Your Experience.**
 
-Đang xem dở mà sếp gọi đi làm? Cứ đóng app rồi đi giải cứu nền kinh tế. Tiến độ xem được lưu lại, nên khi về bạn có thể mở lại video từ chỗ đang xem dở.
+Đã cất công xây dựng cả một bộ sưu tập phim mà cứ hết tập lại phải thoát trình phát rồi tự đi tìm tập tiếp theo? Fluent Media Player giúp bạn mở thư mục phim, quản lý danh sách phát và chuyển tập ngay trong ứng dụng.
 
-Fluent Media Player là ứng dụng phát video trên máy tính, được xây dựng bằng Python, PyQt6 và libVLC.
+Đang xem dở mà có việc đột xuất? Không cần lo lắng. Tiến độ xem được lưu lại, cho phép bạn tiếp tục video từ đúng vị trí đã dừng trước đó.
 
-## Tải và chạy
+Fluent Media Player là ứng dụng phát video trên Windows, được xây dựng bằng **Python, PyQt6 và libVLC**, hướng đến trải nghiệm xem phim cá nhân thuận tiện, liền mạch và dễ quản lý.
 
-Hãy tải xuống tệp [**`app.zip`**](https://github.com/hoangviet24/film-library/releases/tag/film) mới nhất từ ​​trang [GitHub Releases](https://github.com/hoangviet24/film-library/releases/latest), giải nén tệp đó, rồi mở ứng dụng từ thư mục vừa giải nén. Bạn không cần phải cài đặt Python hay các thành phần phụ thuộc dành cho nhà phát triển (development dependencies) để sử dụng phiên bản đã đóng gói này.
+## Tải xuống
+
+Truy cập [GitHub Releases](https://github.com/hoangviet24/film-library/releases/latest) để tải phiên bản mới nhất.
+
+Hiện tại, ứng dụng cung cấp hai phiên bản:
+
+| Phiên bản            | Mô tả                                                                       |
+| -------------------- | --------------------------------------------------------------------------- |
+| **Portable (.exe)**  | Không cần cài đặt. Tải về và chạy trực tiếp để trải nghiệm ứng dụng.        |
+| **Installer (.exe)** | Bộ cài đặt dành cho người muốn cài ứng dụng vào Windows để sử dụng lâu dài. |
+
+**Nên chọn phiên bản nào?**
+
+- Chọn **Portable** nếu bạn chỉ muốn dùng thử hoặc không muốn cài đặt ứng dụng.
+- Chọn **Installer** nếu bạn muốn tích hợp ứng dụng vào Windows và sử dụng thường xuyên.
+
+Bạn không cần cài đặt Python hay các thư viện dành cho nhà phát triển để sử dụng các phiên bản đã đóng gói.
 
 ## Tính năng
 
-- Mở một video hoặc quét một thư mục cùng các thư mục con để tìm video.
-- Duyệt các video được nhóm theo thư mục chứa chúng và di chuyển giữa các mục trong danh sách phát.
-- Phát, tạm dừng, tua video, thay đổi âm lượng, tắt tiếng và điều chỉnh tốc độ phát.
-- Chuyển sang chế độ toàn màn hình hoặc mở video trong cửa sổ trình phát thu nhỏ dạng nổi.
-- Lưu vị trí phát và hiển thị các video đã xem gần đây trên màn hình chính.
-- Tạo ảnh thu nhỏ (thumbnail) cho video thông qua tiến trình chạy ngầm (yêu cầu cài đặt OpenCV).
-- Hỗ trợ thêm tệp video và thư mục bằng thao tác kéo thả.
+### Video Playback
 
-> Ứng dụng lọc các tệp có định dạng `.mp4`, `.mkv`, `.avi`, `.mov` và `.flv`. Việc phát tệp thực tế phụ thuộc vào các codec có sẵn trong môi trường chạy libVLC đã được cài đặt.
+- Mở một video riêng lẻ hoặc quét toàn bộ thư mục cùng các thư mục con để tìm video.
+- Phát video, tạm dừng, tua nhanh, tua lùi và điều chỉnh tốc độ phát.
+- Điều chỉnh âm lượng và bật/tắt âm thanh.
+- Hỗ trợ chế độ toàn màn hình (Fullscreen).
+- Hỗ trợ cửa sổ phát video nổi (Popup Mode).
 
-## Các Yêu cầu để chạy từ mã nguồn
+### Playlist &amp; Media Library
 
-\- Windows là nền tảng được mã nguồn hiện tại thiết lập để nhúng video VLC vào cửa sổ ứng dụng.
+- Quản lý danh sách video được nhóm theo thư mục.
+- Dễ dàng chuyển đổi giữa các tập phim mà không cần mở lại từng tệp.
+- Hỗ trợ phát video theo danh sách phát (Playlist).
+- Lưu lịch sử xem và vị trí phát gần nhất.
+- Hiển thị các video đã xem gần đây.
+- Hỗ trợ thêm video và thư mục bằng thao tác kéo thả.
 
-\- Python 3.10 hoặc mới hơn.
+### Seekbar Thumbnail Preview
 
-\- Các gói Python bao gồm `PyQt6` và `python-vlc`.
+Không còn phải tua video một cách mù quáng!
 
-\- Môi trường chạy (runtime) VLC/libVLC gốc. Kho lưu trữ này không bao gồm các tệp nhị phân của VLC. Trên Windows, tệp [`config.py`](https://github.com/hoangviet24/film-library/blob/main/config.py) sẽ tìm kiếm thư mục runtime `vlc/` nằm cạnh tệp [`app.py`](https://github.com/hoangviet24/film-library/blob/main/app.py) và tự động cấu hình các đường dẫn đến tệp DLL cũng như các plugin nếu thư mục này tồn tại. Nếu không, bạn cần đảm bảo rằng một phiên bản VLC/libVLC tương thích đã được cài đặt và có thể truy cập được bởi Python.
+Lấy cảm hứng từ trải nghiệm trên YouTube, Fluent Media Player cung cấp tính năng xem trước nội dung ngay trên thanh tiến trình video.
 
-\- Tùy chọn: `opencv-python` dùng để tạo ảnh thu nhỏ (thumbnail) xem trước. Nếu thiếu gói này, các tính năng phát video và lưu lịch sử xem vẫn hoạt động bình thường, nhưng các ảnh thu nhỏ sẽ không được tạo ra.
+- Khi di chuyển chuột qua thanh tiến trình, ứng dụng hiển thị một hình ảnh thu nhỏ (Thumbnail Preview) tương ứng với vị trí đang chọn.
+- Hiển thị thời gian chính xác của đoạn video đang được xem trước.
+- Giúp người dùng xác định nội dung tại vị trí muốn tua đến trước khi thực hiện thao tác.
+- Hỗ trợ tìm kiếm những phân cảnh mong muốn dễ dàng và trực quan hơn.
 
-> Trong kho lưu trữ không có tệp khóa phụ thuộc (dependency lockfile) hay tệp liệt kê yêu cầu (requirements file); hãy cài đặt trực tiếp các gói được liệt kê ở trên.
+### Windows Integration
+
+- Hỗ trợ mở video trực tiếp từ Windows File Explorer thông qua tính năng **Open With**.
+- Có thể khởi chạy ứng dụng và phát video được chọn mà không cần mở ứng dụng trước rồi tìm tệp thủ công.
+- Cung cấp hai phương thức phân phối: Portable và Installer.
+
+### Additional Features
+
+- Tạo ảnh thu nhỏ (Thumbnail) cho video thông qua tiến trình chạy ngầm (yêu cầu OpenCV).
+- Hỗ trợ nhiều chế độ hiển thị và điều khiển bằng bàn phím.
+
+> Ứng dụng lọc các tệp có định dạng `.mp4`, `.mkv`, `.avi`, `.mov` và `.flv`. Việc phát tệp thực tế phụ thuộc vào các codec có sẵn trong môi trường chạy libVLC.
+
+## Hướng dẫn sử dụng
+
+### 1. Mở video
+
+Có nhiều cách để mở video:
+
+- **Open File:** Chọn một video riêng lẻ để phát.
+- **Open Folder:** Chọn thư mục chứa phim để quét và hiển thị danh sách video.
+- **Drag &amp; Drop:** Kéo thả video hoặc thư mục trực tiếp vào cửa sổ ứng dụng.
+- **Open With:** Chuột phải vào video trong Windows File Explorer, chọn Open With và chọn Fluent Media Player.
+
+### 2. Quản lý Playlist
+
+Sau khi mở một thư mục, các video được tìm thấy sẽ xuất hiện trong danh sách phát.
+
+Bạn có thể:
+
+- Chọn tập phim muốn xem.
+- Chuyển sang tập tiếp theo hoặc quay lại tập trước.
+- Ẩn hoặc hiện thanh danh sách phát.
+- Tiếp tục xem video từ vị trí đã lưu trước đó.
+
+### 3. Tua video với Thumbnail Preview
+
+Di chuyển con trỏ chuột đến vị trí mong muốn trên thanh tiến trình.
+
+Ứng dụng sẽ hiển thị:
+
+- Hình ảnh xem trước của đoạn video tương ứng.
+- Timestamp của vị trí đang được chọn.
+
+Bạn có thể quan sát nội dung trước khi nhấp để tua đến vị trí đó.
+
+## Keyboard Shortcuts
+
+| Phím tắt             | Chức năng                       |
+| -------------------- | ------------------------------- |
+| `Space`              | Phát / Tạm dừng                 |
+| `Left` / `Right`     | Tua lùi / tiến 5 giây           |
+| `Up` / `Down`        | Tăng / giảm âm lượng            |
+| `M`                  | Bật / tắt âm thanh              |
+| `F`                  | Bật / tắt chế độ toàn màn hình  |
+| Double-click         | Phóng to / thu nhỏ video        |
+| `Esc`                | Thoát chế độ toàn màn hình      |
+| `P` / `Ctrl + Left`  | Video trước trong Playlist      |
+| `N` / `Ctrl + Right` | Video tiếp theo trong Playlist  |
+| `B`                  | Hiện / ẩn thanh Playlist        |
+| `Ctrl + O`           | Mở thư mục                      |
+| `O`                  | Mở tệp                          |
+| `[` / `]`            | Giảm / tăng tốc độ phát (0.25x) |
+
+## Yêu cầu hệ thống
+
+- **Operating System:** Windows 10 / Windows 11 (64-bit).
+- **Architecture:** x64.
+- Các hệ điều hành khác hiện chưa được hỗ trợ.
+
+## Công nghệ sử dụng
+
+| Công nghệ   | Vai trò                       |
+| ----------- | ----------------------------- |
+| Python      | Ngôn ngữ lập trình chính      |
+| PyQt6       | Xây dựng giao diện người dùng |
+| libVLC      | Xử lý và phát video           |
+| OpenCV      | Hỗ trợ xử lý và tạo Thumbnail |
+| PyInstaller | Đóng gói ứng dụng Windows     |
 
 ## Chạy từ mã nguồn (dành cho nhà phát triển)
 
-#### Để chạy mã nguồn thay vì ứng dụng đã đóng gói, hãy sử dụng PowerShell từ thư mục dự án:
+### Requirements
 
-```bash
+- Windows.
+- Python 3.10 trở lên.
+- PyQt6.
+- python-vlc.
+- VLC/libVLC runtime tương thích.
+- OpenCV (tùy chọn, dùng cho tính năng tạo Thumbnail).
+
+### Installation
+
+Sử dụng PowerShell từ thư mục dự án:
+
+```
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
 python -m pip install --upgrade pip
 python -m pip install PyQt6 python-vlc opencv-python
+
 python app.py
 ```
 
-`opencv-python` là tùy chọn. Để chỉ cài đặt các gói Python bắt buộc, hãy sử dụng:
+Nếu chỉ cần các thư viện bắt buộc:
 
-```bash
+```
 python -m pip install PyQt6 python-vlc
 ```
 
-Hãy chạy lệnh `python `[`app.py`](https://github.com/hoangviet24/film-library/blob/main/app.py) từ thư mục gốc của kho lưu trữ. Nếu ứng dụng không thể tải VLC, hãy kiểm tra xem thư viện runtime libVLC cùng các plugin của nó đã được cài đặt và hệ thống có thể tìm thấy chúng hay chưa; hoặc bạn có thể đặt thư viện runtime tương thích vào thư mục `vlc/` nằm cùng cấp với tệp [`app.py`](https://github.com/hoangviet24/film-library/blob/main/app.py). ^3jrce5
+Ứng dụng cần môi trường chạy VLC/libVLC cùng các plugin tương thích. Trên Windows, tệp [`config.py`](http://config.py) sẽ tìm kiếm thư mục runtime `vlc/` nằm cạnh [`app.py`](http://app.py) để cấu hình đường dẫn DLL và plugin nếu thư mục này tồn tại.
 
-## Sử dụng trình phát
-
-Chọn **Mở thư mục** (Open folder) để quét thư viện video, hoặc **Mở tệp** (Open file) để bắt đầu phát một video riêng lẻ. Khi mở một tệp, các tệp video được hỗ trợ nằm trong cùng thư mục đó cũng sẽ được liệt kê. Bạn có thể kéo thả một tệp video (được hỗ trợ) hoặc một thư mục vào cửa sổ ứng dụng để mở. Sử dụng thanh bên danh sách phát để chọn video; tiến trình phát sẽ được lưu lại, cho phép bạn tiếp tục xem từ màn hình chính.
-
-| Key                           | Action                             |
-| ----------------------------- | ---------------------------------- |
-| `Space`                       | Phát hoặc dừng                     |
-| `Left \ Right`                | Tua lùi \\ tiến 5 giây             |
-| `Up \ Down`                   | Tăng \\ giảm âm lượng              |
-| `M`                           | Mở \\ tắt âm thanh                 |
-| `F` or double-click the video | Phóng to hoặc thu nhỏ video        |
-| `Esc`                         | Thoát chế độ toàn màn hình         |
-| `P` or `Ctrl+Left`            | Lùi về video trước trong Playlist  |
-| `N` or `Ctrl+Right`           | Tiến về video trước trong Playlist |
-| `B`                           | Hiện hoặc ẩn thanh danh sách phát  |
-| `Ctrl+O`                      | Mở folder                          |
-| `O`                           | Mở file                            |
-| `[/]`                         | Giảm / Tăng tốc độ x0.25           |
+Nếu không có thư mục đó, cần đảm bảo VLC/libVLC tương thích đã được cài đặt và có thể truy cập bởi Python.
 
 ## Cấu hình và dữ liệu đã lưu
 
-Các thiết lập ứng dụng được định nghĩa trong tệp [`config.py`](https://github.com/hoangviet24/film-library/blob/main/config.py). Các phần mở rộng tệp video hiện được hỗ trợ được liệt kê trong `VALID_VIDEO_EXTENSIONS`. Cơ chế tự động phát hiện VLC sẽ kiểm tra sự tồn tại của thư mục `vlc/` nằm cạnh các tệp ứng dụng; nếu thư mục này tồn tại, nó sẽ thiết lập các đường dẫn đến tệp DLL và các plugin của VLC trên hệ điều hành Windows.
+Các thiết lập ứng dụng được định nghĩa trong [`config.py`](http://config.py).
 
-Khi chạy từ mã nguồn, ứng dụng lưu trữ:
+Một số dữ liệu được tạo trong quá trình sử dụng:
 
-\- `video_history.json` — lưu trữ vị trí và tiến trình xem video.
+- `video_history.json` — Lưu lịch sử và vị trí phát video.
+- `thumb_cache/` — Lưu các hình ảnh Thumbnail được tạo ra.
 
-\- `thumb_cache/` — chứa các hình ảnh thu nhỏ (thumbnail) được tạo ra (khi đã cài đặt OpenCV).
-
-Các đường dẫn này được xác định dựa trên thư mục ứng dụng. Tệp lịch sử này bị Git bỏ qua; thư mục `thumb_cache/` cũng được loại trừ.
+Các đường dẫn này được xác định dựa trên thư mục ứng dụng khi chạy từ mã nguồn.
 
 ## Cấu trúc dự án
 
-
-
 ```
 .
-├── app.py                 # Application entry point
-├── config.py              # Runtime paths, history/cache locations, extensions
-├── main_window.py         # Main window, navigation, playback UI, shortcuts
-├── player_controller.py   # libVLC playback controls
-├── styles.py              # Shared colors and Qt styles
+├── app.py
+├── config.py
+├── main_window.py
+├── player_controller.py
+├── styles.py
 ├── assets/
 │   ├── logo.ico
-│   └── logo.png
+│   ├── logo.png
+│   └── ...
 ├── utils/
-│   ├── history.py         # Playback history persistence
-│   └── thumbnail.py       # Optional thumbnail generation
-└── widgets/               # Player, playlist, overlay, and floating-window widgets
+│   ├── history.py
+│   └── thumbnail.py
+└── widgets/
+    └── ...
 ```
 
 ## Screenshots
 
-![image](assets/image.png)![image](assets/image-1.png)![image](assets/image-2.png)
+![image](assets/image.png)
 
-## Ghi chú về nền tảng
+![image](assets/image-1.png)
 
-Trình phát nhúng video thông qua một handle cửa sổ Windows (`HWND`). Các nền tảng khác chưa được xác minh bởi mã nguồn trong kho lưu trữ này. Việc hỗ trợ các định dạng video và âm thanh phụ thuộc vào bản dựng libVLC đã cài đặt và các codec hiện có.
+![image](assets/image-2.png)
+
+![image](assets/image-3.png)
+
+## Platform Support
+
+Fluent Media Player hiện được phát triển và tối ưu cho Windows.
+
+Ứng dụng sử dụng Windows HWND để nhúng nội dung video vào cửa sổ giao diện thông qua libVLC. Các nền tảng khác hiện chưa được hỗ trợ hoặc xác minh.
+
+---
+
+**Fluent Media Player — Enjoy your collection, one episode at a time.**
