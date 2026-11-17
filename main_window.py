@@ -1,28 +1,35 @@
 import os
 import sys
+import shutil
+import subprocess
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QSize, QEvent
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
-    QFileDialog, QFrame, QStackedWidget, QLabel, QPushButton
+    QFileDialog, QFrame, QStackedWidget, QLabel, QPushButton,
+    QDialog, QLineEdit, QMessageBox
 )
 from PyQt6.QtGui import QKeySequence, QShortcut, QDragEnterEvent, QDropEvent
 
 import config
-from config import VALID_VIDEO_EXTENSIONS
+from config import VALID_VIDEO_EXTENSIONS, THUMB_CACHE_DIR
 from player_controller import PlayerController
 from styles import (
-    MAIN_WINDOW_STYLE, CARD_STYLE, BTN_CONTROL_STYLE, 
-    COLOR_ACCENT, COLOR_BG_APP
+    MAIN_WINDOW_STYLE, CARD_STYLE, BTN_CONTROL_STYLE, BTN_PRIMARY_STYLE,
+    SEARCH_INPUT_STYLE, DIALOG_STYLE, COLOR_ACCENT, COLOR_BG_APP
 )
-from utils import ThumbnailWorker, load_history, save_history, PreviewManager, setup_window_icon
+from utils import (
+    ThumbnailWorker, load_history, save_history, PreviewManager,
+    setup_window_icon, invalidate_metadata_cache
+)
 from widgets import (
     LandingPage,
     PlayerControlsBar,
     PlaylistSidebar,
     FloatingVideoWindow,
     VideoOverlayPanel,
-    VlcVideoWidget
+    VlcVideoWidget,
+    VideoPropertiesDialog
 )
 
 
@@ -215,6 +222,12 @@ class VideoPlayerApp(QMainWindow):
         self.sidebar.change_folder_clicked.connect(self.open_folder_dialog)
         self.sidebar.close_sidebar_clicked.connect(self.toggle_playlist_sidebar)
         self.sidebar.thumbnails_needed.connect(self.thumb_worker.set_tasks)
+        self.sidebar.add_video_requested.connect(self.add_video_to_playlist)
+        self.sidebar.rename_video_requested.connect(self.rename_video_in_playlist)
+        self.sidebar.remove_from_playlist_requested.connect(self.remove_video_from_playlist)
+        self.sidebar.delete_video_requested.connect(self.delete_video_from_disk)
+        self.sidebar.open_file_location_requested.connect(self.open_video_file_location)
+        self.sidebar.properties_requested.connect(self.show_video_properties)
         player_page_layout.addWidget(self.sidebar)
 
         self.stacked_widget.addWidget(self.player_page)
@@ -325,6 +338,14 @@ class VideoPlayerApp(QMainWindow):
         self.play_video_file(file_path)
 
     def play_video_file(self, file_path: str):
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(
+                self,
+                "Không tìm thấy tệp",
+                f"Tệp video không còn tồn tại trên hệ thống:\n{file_path}"
+            )
+            return
+
         self.current_video_path = file_path
         filename = os.path.basename(file_path)
 
@@ -343,6 +364,335 @@ class VideoPlayerApp(QMainWindow):
         last_sec = history_info.get("pos", 0)
         if last_sec > 1:
             QTimer.singleShot(350, lambda: self.player.set_time(int(last_sec * 1000)))
+
+    # ---------------- QUẢN LÝ VIDEO TRONG PLAYLIST (CONTEXT MENU) ----------------
+    def add_video_to_playlist(self):
+        """Thêm một hoặc nhiều tệp video từ máy tính vào danh sách phát hiện tại."""
+        ext_filter = " ".join(f"*{ext}" for ext in VALID_VIDEO_EXTENSIONS)
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Thêm video vào danh sách phát",
+            "",
+            f"Video Files ({ext_filter});;All Files (*.*)"
+        )
+        if not file_paths:
+            return
+
+        added = self.sidebar.add_videos_to_playlist(file_paths, self.history)
+        if not added:
+            return
+
+        # Đồng bộ lại self.movies_data từ sidebar
+        grp = self.sidebar.get_current_group()
+        if grp:
+            if grp not in self.movies_data:
+                self.movies_data[grp] = []
+            existing_norms = {os.path.normcase(os.path.abspath(p)) for p in self.movies_data[grp]}
+            for p in added:
+                if os.path.normcase(os.path.abspath(p)) not in existing_norms:
+                    self.movies_data[grp].append(p)
+
+        # Nếu chưa phát video nào thì tự động phát video vừa thêm đầu tiên
+        if not self.current_video_path:
+            self.play_video_file(added[0])
+
+    def rename_video_in_playlist(self, file_path: str):
+        """Đổi tên tệp video trực tiếp trên ổ đĩa và cập nhật đồng bộ Playlist & trình phát."""
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "Lỗi đổi tên", "Tệp video không tồn tại trên ổ đĩa.")
+            return
+
+        abs_old = os.path.abspath(file_path)
+        folder = os.path.dirname(abs_old)
+        old_filename = os.path.basename(abs_old)
+        old_stem, old_ext = os.path.splitext(old_filename)
+
+        # Tạo hộp thoại đổi tên theo phong cách Fluent Dark UI
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Rename Video")
+        dlg.setMinimumWidth(420)
+        dlg.setStyleSheet(DIALOG_STYLE)
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        lbl_prompt = QLabel(f"Nhập tên mới cho video (định dạng <b>{old_ext}</b>):")
+        lbl_prompt.setStyleSheet("color: #FFFFFF; font-size: 13px;")
+        lay.addWidget(lbl_prompt)
+
+        inp = QLineEdit(old_stem)
+        inp.setStyleSheet(SEARCH_INPUT_STYLE)
+        inp.selectAll()
+        lay.addWidget(inp)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setStyleSheet(BTN_CONTROL_STYLE)
+        btn_cancel.setMinimumWidth(80)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        btn_ok = QPushButton("Rename")
+        btn_ok.setStyleSheet(BTN_PRIMARY_STYLE)
+        btn_ok.setMinimumWidth(90)
+        btn_ok.setDefault(True)
+        btn_ok.clicked.connect(dlg.accept)
+
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        lay.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        new_raw = inp.text().strip()
+        if not new_raw:
+            return
+
+        # Giữ nguyên phần mở rộng gốc nếu người dùng không nhập hoặc nhập khác
+        if not new_raw.lower().endswith(old_ext.lower()):
+            new_filename = new_raw + old_ext
+        else:
+            new_filename = new_raw
+
+        if new_filename == old_filename:
+            return
+
+        # Kiểm tra ký tự không hợp lệ của Windows
+        invalid_chars = '<>:"/\\|?*'
+        if any(c in new_filename for c in invalid_chars):
+            QMessageBox.warning(
+                self,
+                "Tên tệp không hợp lệ",
+                f"Tên tệp không được chứa các ký tự đặc biệt sau:\n{invalid_chars}"
+            )
+            return
+
+        abs_new = os.path.join(folder, new_filename)
+        if os.path.exists(abs_new) and os.path.normcase(abs_new) != os.path.normcase(abs_old):
+            QMessageBox.warning(
+                self,
+                "Trùng tên tệp",
+                f"Đã tồn tại một tệp khác cùng tên trong thư mục:\n{new_filename}"
+            )
+            return
+
+        is_current = bool(
+            self.current_video_path
+            and os.path.normcase(os.path.abspath(self.current_video_path)) == os.path.normcase(abs_old)
+        )
+        was_playing = False
+        saved_time_ms = 0
+
+        # Giải phóng file handle trước khi rename trên Windows
+        self.preview_manager.release_video(abs_old)
+        if is_current:
+            was_playing = self.player.is_playing()
+            saved_time_ms = max(0, self.player.get_time())
+            self.player.release_media()
+
+        try:
+            os.rename(abs_old, abs_new)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Không thể đổi tên tệp",
+                f"Hệ điều hành từ chối đổi tên tệp:\n{e}"
+            )
+            # Khôi phục phát lại tệp cũ nếu đổi tên thất bại
+            if is_current and os.path.exists(abs_old):
+                self.player.load_media(abs_old)
+                if was_playing:
+                    self.player.play()
+                if saved_time_ms > 0:
+                    QTimer.singleShot(250, lambda: self.player.set_time(saved_time_ms))
+            return
+
+        # Đổi tên ảnh thumbnail cache tương ứng (nếu có)
+        try:
+            old_thumb = os.path.join(THUMB_CACHE_DIR, f"{old_filename}.jpg")
+            new_thumb = os.path.join(THUMB_CACHE_DIR, f"{new_filename}.jpg")
+            if os.path.exists(old_thumb) and not os.path.exists(new_thumb):
+                shutil.move(old_thumb, new_thumb)
+        except Exception:
+            pass
+
+        invalidate_metadata_cache(abs_old)
+
+        # Cập nhật History
+        for k in list(self.history.keys()):
+            if os.path.normcase(os.path.abspath(k)) == os.path.normcase(abs_old):
+                self.history[abs_new] = self.history.pop(k)
+        save_history(self.history)
+
+        # Cập nhật self.movies_data & Sidebar
+        for grp, paths in self.movies_data.items():
+            for idx, p in enumerate(paths):
+                if os.path.normcase(os.path.abspath(p)) == os.path.normcase(abs_old):
+                    paths[idx] = abs_new
+        self.sidebar.rename_video_item(abs_old, abs_new)
+
+        # Nếu đang phát video này, nạp lại đường dẫn mới và khôi phục đúng vị trí thời gian
+        if is_current:
+            self.current_video_path = abs_new
+            self.preview_manager.set_video(abs_new)
+            self.controls_bar.update_title(new_filename)
+            self.fs_overlay.set_title(new_filename)
+            self.sidebar.select_episode(abs_new)
+            self.player.load_media(abs_new)
+            if was_playing:
+                self.player.play()
+            else:
+                self.player.pause()
+            if saved_time_ms > 0:
+                QTimer.singleShot(250, lambda: self.player.set_time(saved_time_ms))
+
+    def remove_video_from_playlist(self, file_path: str):
+        """Xóa video khỏi danh sách phát hiện tại nhưng KHÔNG xóa tệp gốc trên ổ đĩa."""
+        if not file_path:
+            return
+
+        abs_target = os.path.abspath(file_path)
+        target_norm = os.path.normcase(abs_target)
+        is_current = bool(
+            self.current_video_path
+            and os.path.normcase(os.path.abspath(self.current_video_path)) == target_norm
+        )
+
+        # Cập nhật self.movies_data
+        for grp, paths in list(self.movies_data.items()):
+            self.movies_data[grp] = [
+                p for p in paths
+                if os.path.normcase(os.path.abspath(p)) != target_norm
+            ]
+
+        next_candidate = self.sidebar.remove_video_item(abs_target)
+
+        if is_current:
+            self._handle_active_video_removed(next_candidate)
+
+    def delete_video_from_disk(self, file_path: str):
+        """Xóa vĩnh viễn tệp video khỏi ổ đĩa (có hộp thoại xác nhận an toàn)."""
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "Không tìm thấy tệp", "Tệp video không còn tồn tại trên ổ đĩa.")
+            return
+
+        abs_target = os.path.abspath(file_path)
+        filename = os.path.basename(abs_target)
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Xác nhận xóa tệp vĩnh viễn")
+        msg.setIcon(QMessageBox.Icon.Warning)
+        msg.setText(f"Bạn có chắc chắn muốn xóa vĩnh viễn tệp video này khỏi ổ đĩa?\n\n📄 {filename}")
+        msg.setInformativeText(
+            f"Đường dẫn: {abs_target}\n\n"
+            "Lưu ý: Thao tác này sẽ xóa file gốc trên máy tính. "
+            "Nếu chỉ muốn bỏ video khỏi danh sách phát, hãy chọn 'Remove from Playlist'."
+        )
+        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QMessageBox.StandardButton.No)
+        msg.setStyleSheet(DIALOG_STYLE)
+
+        btn_yes = msg.button(QMessageBox.StandardButton.Yes)
+        if btn_yes:
+            btn_yes.setText("Delete File")
+            btn_yes.setStyleSheet("""
+                QPushButton {
+                    background-color: #C42B1C; color: #FFFFFF; border: none;
+                    border-radius: 6px; padding: 6px 16px; font-weight: bold;
+                }
+                QPushButton:hover { background-color: #D83B2B; }
+            """)
+        btn_no = msg.button(QMessageBox.StandardButton.No)
+        if btn_no:
+            btn_no.setText("Cancel")
+            btn_no.setStyleSheet(BTN_CONTROL_STYLE)
+
+        if msg.exec() != QMessageBox.StandardButton.Yes:
+            return
+
+        target_norm = os.path.normcase(abs_target)
+        is_current = bool(
+            self.current_video_path
+            and os.path.normcase(os.path.abspath(self.current_video_path)) == target_norm
+        )
+
+        # Giải phóng mọi file handle (VLC & OpenCV Preview) trước khi xóa trên Windows
+        self.preview_manager.release_video(abs_target)
+        if is_current:
+            self.player.release_media()
+
+        try:
+            os.remove(abs_target)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Lỗi xóa tệp",
+                f"Không thể xóa tệp khỏi ổ đĩa:\n{e}"
+            )
+            return
+
+        invalidate_metadata_cache(abs_target)
+
+        # Xóa khỏi lịch sử xem
+        for k in list(self.history.keys()):
+            if os.path.normcase(os.path.abspath(k)) == target_norm:
+                self.history.pop(k, None)
+        save_history(self.history)
+
+        # Xóa khỏi self.movies_data & Sidebar
+        for grp, paths in list(self.movies_data.items()):
+            self.movies_data[grp] = [
+                p for p in paths
+                if os.path.normcase(os.path.abspath(p)) != target_norm
+            ]
+        next_candidate = self.sidebar.remove_video_item(abs_target)
+
+        if is_current:
+            self._handle_active_video_removed(next_candidate)
+
+    def _handle_active_video_removed(self, next_candidate: str = None):
+        """Xử lý an toàn trạng thái trình phát khi video đang phát bị xóa hoặc gỡ khỏi Playlist."""
+        self.player.release_media()
+        self.current_video_path = None
+
+        if next_candidate and os.path.exists(next_candidate):
+            self.play_video_file(next_candidate)
+        else:
+            self.controls_bar.update_title("Chưa chọn tập phim")
+            self.controls_bar.update_slider(0)
+            self.controls_bar.update_time(0, 0)
+            self.fs_overlay.set_title("Chưa chọn tập phim")
+            self.fs_overlay.update_slider(0)
+            self.fs_overlay.update_time("00:00", "00:00")
+            if self.popout_window:
+                self.popout_window.overlay.update_slider(0)
+                self.popout_window.overlay.update_time("00:00", "00:00")
+
+    def open_video_file_location(self, file_path: str):
+        """Mở thư mục chứa video bằng Windows File Explorer và bôi đen tệp."""
+        if not file_path or not os.path.exists(file_path):
+            QMessageBox.warning(self, "Không tìm thấy tệp", "Tệp video không tồn tại trên hệ thống.")
+            return
+
+        norm_path = os.path.normpath(os.path.abspath(file_path))
+        if sys.platform.startswith("win"):
+            subprocess.Popen(f'explorer /select,"{norm_path}"')
+        else:
+            folder = os.path.dirname(norm_path)
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", norm_path])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+
+    def show_video_properties(self, file_path: str):
+        """Hiển thị cửa sổ thuộc tính chi tiết của video (Video Properties)."""
+        if not file_path:
+            return
+        dlg = VideoPropertiesDialog(file_path, self)
+        dlg.exec()
 
     # ---------------- ĐIỀU KHIỂN PHÁT VIDEO ----------------
     def toggle_play(self):

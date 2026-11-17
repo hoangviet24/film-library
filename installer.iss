@@ -25,11 +25,11 @@ SetupIconFile=assets\logo.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 SolidCompression=yes
-Compression=lzma2/ultra64
+Compression=lzma2/fast
 
 ; Privileges & Installation Mode
 PrivilegesRequired=admin
-PrivilegesRequiredOverridesAllowed=dialog
+PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyOutputBaseFilename}
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -111,7 +111,7 @@ begin
   if CurUninstallStep = usPostUninstall then
   begin
     DataDir := ExpandConstant('{userappdata}\FluentMediaPlayer');
-    if DirExists(DataDir) then
+    if DirExists(DataDir) and (not UninstallSilent) then
     begin
       if MsgBox('Do you want to delete your playback history and thumbnail cache?' + #13#10 + DataDir, mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
       begin

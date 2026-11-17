@@ -12,12 +12,20 @@ class _PreviewWorker(QThread):
         self._cond = QWaitCondition()
         self._running = True
         self._pending_request = None  # (video_path, bucket_sec)
+        self._release_requested = False
         self._cap = None
         self._current_cap_path = None
 
     def request(self, video_path: str, bucket_sec: int):
         with QMutexLocker(self._mutex):
             self._pending_request = (video_path, bucket_sec)
+            self._cond.wakeOne()
+
+    def release_current_capture(self):
+        with QMutexLocker(self._mutex):
+            self._pending_request = None
+            self._release_requested = True
+            self._release_cap()
             self._cond.wakeOne()
 
     def stop(self):
@@ -133,6 +141,20 @@ class PreviewManager(QObject):
             first_key = next(iter(self._cache))
             del self._cache[first_key]
         self.preview_ready.emit(video_path, bucket_sec, pixmap)
+
+    def release_video(self, video_path: str = None):
+        """Giải phóng file handle VideoCapture để cho phép đổi tên hoặc xóa file trên Windows."""
+        self._worker.release_current_capture()
+        if video_path:
+            norm = os.path.normcase(os.path.abspath(video_path))
+            keys_to_remove = [
+                k for k in self._cache
+                if os.path.normcase(os.path.abspath(k[0])) == norm
+            ]
+            for k in keys_to_remove:
+                self._cache.pop(k, None)
+            if self._current_video_path and os.path.normcase(os.path.abspath(self._current_video_path)) == norm:
+                self._current_video_path = None
 
     def stop(self):
         self._worker.stop()

@@ -80,6 +80,9 @@ class EpisodeItemWidget(QWidget):
 
         layout.addLayout(info_layout, stretch=1)
 
+    def set_title(self, title: str):
+        self.lbl_title.setText(title)
+
     def set_thumbnail(self, thumb_path: str = None):
         if thumb_path and os.path.exists(thumb_path):
             self.lbl_thumb.setPixmap(QPixmap(thumb_path))
