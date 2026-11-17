@@ -3,21 +3,26 @@
   "files": [
     {
       "name": "image-1.png",
-      "sha256": "f5549933ac86b9033033198783e0d269b15a0a831e7a60eaf10a87fa6c5d4b4a"
+      "sha256": "c0059da7251a0f4a9031c912ddb02a5ce2a5a6830b7066796219d85954116844"
     },
     {
       "name": "image-2.png",
-      "sha256": "29f95ca3eeb9d4fdeb3471e92026de441cfddf2bf3ffede043f4bc7b57f18d0d"
+      "sha256": "a8b5e092f7418078b41f9eee483a0f0ba13e03dda54d64575d0268599c4ac3df"
+    },
+    {
+      "name": "image-3.png",
+      "sha256": "d4c955a3764ebd769ee498384b2945765a076080accd67fa0f612928e9eb4098"
     },
     {
       "name": "image.png",
-      "sha256": "59b4daffe702e95ccae456b464b838b6192fdd43845ee8153e11a119f4671e78"
+      "sha256": "f0fe3137e21fa84957e9eb4f6e9600506947a63420e601aefbf8ed163a775bc7"
     }
   ],
   "documents": {
     "README.md": [
       "image-1.png",
       "image-2.png",
+      "image-3.png",
       "image.png"
     ]
   },
