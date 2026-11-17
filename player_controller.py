@@ -66,6 +66,15 @@ class PlayerController(QObject):
         self.media_player.stop()
         self.playback_state_changed.emit(False)
 
+    def release_media(self):
+        """Dừng phát và giải phóng hoàn toàn file lock trên ổ đĩa."""
+        try:
+            self.media_player.stop()
+            self.media_player.set_media(None)
+        except Exception:
+            pass
+        self.playback_state_changed.emit(False)
+
     def is_playing(self) -> bool:
         return bool(self.media_player.is_playing())
 

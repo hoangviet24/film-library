@@ -9,6 +9,7 @@ from .overlay_panel import VideoOverlayPanel
 from .smooth_scroll import SmoothScrollArea
 from .vlc_widget import VlcVideoWidget
 from .preview_popup import VideoThumbnailPreview
+from .video_properties_dialog import VideoPropertiesDialog
 
 __all__ = [
     "AutoFitListWidget",
@@ -21,5 +22,6 @@ __all__ = [
     "VideoOverlayPanel",
     "SmoothScrollArea",
     "VlcVideoWidget",
-    "VideoThumbnailPreview"
+    "VideoThumbnailPreview",
+    "VideoPropertiesDialog",
 ]

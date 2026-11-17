@@ -1,10 +1,27 @@
-/__pycache__
-thumb_cache/
-dist/
-build/
-release/
+# Python bytecode & cache (mọi thư mục con)
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Môi trường ảo (Virtual Environments)
 venv_pack/
-video_history.json
-VLC/
+.venv/
+venv/
+env/
+
+# Thư mục đóng gói & bản phát hành (PyInstaller & Inno Setup)
+build/
+dist/
+release/
 /*.spec
 !/app.spec
+
+# Dữ liệu runtime, cache & log của ứng dụng
+thumb_cache/
+*video_history.json
+*.log
+
+# Thư viện nhị phân ngoài
+VLC/
+vlc/
+

@@ -271,3 +271,76 @@ EPISODES_LIST_STYLE = f"""
         border: 1px solid {COLOR_ACCENT};
     }}
 """
+
+# Menu chuột phải (Context Menu chuẩn Fluent Dark UI)
+CONTEXT_MENU_STYLE = f"""
+    QMenu {{
+        background-color: #1E1E1E;
+        color: {COLOR_TEXT_PRIMARY};
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        padding: 6px 4px;
+        font-size: 13px;
+    }}
+    QMenu::item {{
+        padding: 7px 24px 7px 14px;
+        border-radius: 5px;
+        margin: 1px 4px;
+        background-color: transparent;
+    }}
+    QMenu::item:selected {{
+        background-color: {COLOR_BG_HOVER};
+        color: #FFFFFF;
+    }}
+    QMenu::item:pressed {{
+        background-color: {COLOR_ACCENT};
+        color: #FFFFFF;
+    }}
+    QMenu::item:disabled {{
+        color: {COLOR_TEXT_MUTED};
+        background-color: transparent;
+    }}
+    QMenu::separator {{
+        height: 1px;
+        background: rgba(255, 255, 255, 0.08);
+        margin: 5px 10px;
+    }}
+"""
+
+# Cửa sổ Hộp thoại & Properties (Fluent Dark Dialog & Tabs)
+DIALOG_STYLE = f"""
+    QDialog {{
+        background-color: {COLOR_BG_APP};
+        color: {COLOR_TEXT_PRIMARY};
+        font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+    }}
+    QTabWidget::pane {{
+        background-color: {COLOR_BG_CARD};
+        border: 1px solid {COLOR_BORDER_SUBTLE};
+        border-radius: 8px;
+        top: -1px;
+    }}
+    QTabBar::tab {{
+        background-color: #141414;
+        color: {COLOR_TEXT_SECONDARY};
+        border: 1px solid {COLOR_BORDER_SUBTLE};
+        border-bottom: none;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        padding: 8px 18px;
+        margin-right: 4px;
+        font-size: 13px;
+        font-weight: 500;
+    }}
+    QTabBar::tab:hover {{
+        background-color: {COLOR_BG_HOVER};
+        color: #FFFFFF;
+    }}
+    QTabBar::tab:selected {{
+        background-color: {COLOR_BG_CARD};
+        color: #FFFFFF;
+        border-bottom: 2px solid {COLOR_ACCENT};
+        font-weight: 600;
+    }}
+"""
+
