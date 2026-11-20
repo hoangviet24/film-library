@@ -1,10 +1,11 @@
 from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QEvent
-from PyQt6.QtGui import QCursor, QAction
+from PyQt6.QtGui import QCursor, QAction, QColor, QFont
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
+    QApplication, QWidget, QFrame, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QMenu
 )
 from .clickable_slider import ClickableSlider
+from .marquee_label import MarqueeLabel
 from .preview_popup import VideoThumbnailPreview
 from styles import (
     SEEK_SLIDER_STYLE, VOLUME_SLIDER_STYLE, COLOR_ACCENT, 
@@ -50,19 +51,42 @@ class VideoOverlayPanel(QWidget):
         if self.mode == "fullscreen":
             layout.setContentsMargins(40, 30, 40, 30)
             
-            # Top Bar: Tiêu đề phim & Nút thu nhỏ
+            # Top Bar: Tiêu đề phim (hỗ trợ Marquee) & Nút thu nhỏ
             top_layout = QHBoxLayout()
-            self.lbl_title = QLabel("🎬 Đang phát toàn màn hình", self)
-            self.lbl_title.setStyleSheet("""
-                QLabel {
-                    color: #FFFFFF;
-                    font-size: 15px; font-weight: bold;
+            title_pill = QFrame(self)
+            title_pill.setMaximumWidth(620)
+            title_pill.setStyleSheet("""
+                QFrame {
                     background-color: rgba(15, 15, 15, 0.85);
-                    padding: 8px 18px; border-radius: 8px;
+                    border-radius: 8px;
                     border: 1px solid rgba(255, 255, 255, 0.15);
                 }
             """)
-            top_layout.addWidget(self.lbl_title)
+            title_pill_layout = QHBoxLayout(title_pill)
+            title_pill_layout.setContentsMargins(14, 6, 14, 6)
+            title_pill_layout.setSpacing(8)
+            title_pill_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+            lbl_fs_icon = QLabel("🎬", title_pill)
+            lbl_fs_icon.setFixedWidth(18)
+            lbl_fs_icon.setStyleSheet("color: #FFFFFF; font-size: 14px; background: transparent; border: none;")
+            title_pill_layout.addWidget(lbl_fs_icon)
+
+            self.lbl_title = MarqueeLabel(
+                "Đang phát toàn màn hình",
+                title_pill,
+                fade_color=QColor(15, 15, 15, 0),
+                text_color=QColor("#FFFFFF"),
+            )
+            fs_font = QFont("Segoe UI")
+            fs_font.setPixelSize(14)
+            fs_font.setWeight(QFont.Weight.Bold)
+            self.lbl_title.setFont(fs_font)
+            self.lbl_title.setFixedHeight(24)
+            title_pill_layout.addWidget(self.lbl_title, stretch=1)
+
+            top_layout.addWidget(title_pill, stretch=1)
+            top_layout.addSpacing(20)
             top_layout.addStretch()
 
             btn_exit = QPushButton("⤡ Thu nhỏ (Esc)", self)
@@ -160,11 +184,15 @@ class VideoOverlayPanel(QWidget):
 
             bottom_row = QHBoxLayout()
             self.lbl_time_cur = QLabel("00:00", bot_card)
-            self.lbl_time_cur.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold; border: none; background: transparent;")
+            self.lbl_time_cur.setStyleSheet("color: #FFFFFF; font-size: 13px; font-weight: bold; font-family: 'Consolas', monospace; border: none; background: transparent;")
             bottom_row.addWidget(self.lbl_time_cur)
 
+            lbl_sep = QLabel("/", bot_card)
+            lbl_sep.setStyleSheet("color: #666666; font-size: 12px; border: none; background: transparent; padding: 0px 2px;")
+            bottom_row.addWidget(lbl_sep)
+
             self.lbl_time_tot = QLabel("00:00", bot_card)
-            self.lbl_time_tot.setStyleSheet("color: #AAAAAA; font-size: 13px; border: none; background: transparent;")
+            self.lbl_time_tot.setStyleSheet("color: #AAAAAA; font-size: 13px; font-family: 'Consolas', monospace; border: none; background: transparent;")
             bottom_row.addWidget(self.lbl_time_tot)
 
             bottom_row.addStretch()
@@ -553,4 +581,5 @@ class VideoOverlayPanel(QWidget):
 
     def set_title(self, title):
         if hasattr(self, 'lbl_title'):
-            self.lbl_title.setText(f"🎬 {title}")
+            self.lbl_title.setText(title)
+            self.lbl_title.setToolTip(title)
