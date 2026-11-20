@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt, QPoint, QRect
 from PyQt6.QtGui import QPixmap, QGuiApplication
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QFrame
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QFrame
 
 class VideoThumbnailPreview(QWidget):
     """
@@ -11,7 +11,12 @@ class VideoThumbnailPreview(QWidget):
     - Tách biệt luồng giải mã giúp không gián đoạn video đang phát
     """
     def __init__(self, parent=None):
-        flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+        flags = (
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
         super().__init__(parent, flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
@@ -70,7 +75,24 @@ class VideoThumbnailPreview(QWidget):
         main_layout.addWidget(self.card)
         self.adjustSize()
 
+    def is_owner_window_active(self) -> bool:
+        app = QApplication.instance()
+        if app is None or app.applicationState() != Qt.ApplicationState.ApplicationActive:
+            return False
+        parent = self.parentWidget()
+        if parent is not None and hasattr(parent, "is_owner_window_active"):
+            return parent.is_owner_window_active()
+        if parent is not None:
+            owner = parent.window()
+            if owner is None or not owner.isVisible() or owner.isMinimized() or not owner.isActiveWindow():
+                return False
+        return True
+
     def show_preview(self, global_x: int, target_top_y: int, msec: int, pixmap: QPixmap = None):
+        if not self.is_owner_window_active():
+            self.hide_preview()
+            return
+
         self.lbl_time.setText(self._format_time(msec))
 
         if pixmap and not pixmap.isNull():
@@ -97,10 +119,14 @@ class VideoThumbnailPreview(QWidget):
             popup_y = target_top_y + 35
 
         self.move(popup_x, popup_y)
-        self.show()
-        self.raise_()
+        if not self.isVisible():
+            self.show()
+            self.raise_()
 
     def set_thumbnail(self, pixmap: QPixmap):
+        if not self.is_owner_window_active():
+            self.hide_preview()
+            return
         if pixmap and not pixmap.isNull():
             self.lbl_thumb.setPixmap(pixmap)
 

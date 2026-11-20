@@ -5,11 +5,11 @@ import subprocess
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QSize, QEvent
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
+    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, 
     QFileDialog, QFrame, QStackedWidget, QLabel, QPushButton,
     QDialog, QLineEdit, QMessageBox
 )
-from PyQt6.QtGui import QKeySequence, QShortcut, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QKeySequence, QShortcut, QDragEnterEvent, QDropEvent, QCursor
 
 import config
 from config import VALID_VIDEO_EXTENSIONS, THUMB_CACHE_DIR
@@ -67,6 +67,12 @@ class VideoPlayerApp(QMainWindow):
         self.is_playlist_visible = True
         self._was_maximized = False
         self._cursor_hidden = False
+        self._awaiting_user_interaction = False
+        self._activation_cursor_pos = None
+
+        app = QApplication.instance()
+        if app is not None:
+            app.applicationStateChanged.connect(self._on_application_state_changed)
 
         # Worker tạo ảnh thu nhỏ (Thumbnail) bất đồng bộ
         self.thumb_worker = ThumbnailWorker()
@@ -270,6 +276,7 @@ class VideoPlayerApp(QMainWindow):
 
     # ---------------- ĐIỀU HƯỚNG & MỞ PHIM ----------------
     def show_landing_page(self):
+        self._hide_main_overlays(mark_deactivated=False)
         self.player.pause()
         self.landing_page.update_recent_history(self.history)
         self.stacked_widget.setCurrentIndex(0)
@@ -715,11 +722,15 @@ class VideoPlayerApp(QMainWindow):
     def seek_relative(self, seconds: float):
         self.player.seek_relative(seconds)
         if self.is_fullscreen_mode:
-            self.fs_overlay.show_overlay()
+            if self.isActiveWindow():
+                self._awaiting_user_interaction = False
+                self.fs_overlay.show_overlay()
         elif self.popout_window:
             self.popout_window.show_overlay()
         else:
-            self.main_overlay.show_overlay()
+            if self.isActiveWindow():
+                self._awaiting_user_interaction = False
+                self.main_overlay.show_overlay()
 
     def seek_to_percentage(self, pos_pct: float):
         self.player.seek_percentage(pos_pct)
@@ -788,8 +799,62 @@ class VideoPlayerApp(QMainWindow):
         self.controls_bar.set_playlist_active(self.is_playlist_visible)
         QTimer.singleShot(100, self.main_overlay.reposition)
 
+    # ---------------- QUẢN LÝ FOCUS & OVERLAY ----------------
+    def _on_application_state_changed(self, state):
+        if state != Qt.ApplicationState.ApplicationActive:
+            self.hide_all_overlays(mark_deactivated=True)
+        else:
+            self._snapshot_activation_cursor()
+
+    def _snapshot_activation_cursor(self):
+        self._activation_cursor_pos = QCursor.pos()
+        if self.popout_window is not None:
+            self.popout_window.snapshot_activation_cursor()
+
+    def _hide_main_overlays(self, mark_deactivated: bool = True):
+        if hasattr(self, "main_overlay") and self.main_overlay:
+            self.main_overlay.hide_overlay()
+        if hasattr(self, "fs_overlay") and self.fs_overlay:
+            self.fs_overlay.hide_overlay()
+        if hasattr(self, "controls_bar") and self.controls_bar:
+            self.controls_bar.hide_overlays()
+        if self.is_fullscreen_mode:
+            self.restore_cursor()
+        if mark_deactivated:
+            self._awaiting_user_interaction = True
+            self._activation_cursor_pos = None
+
+    def hide_all_overlays(self, mark_deactivated: bool = True):
+        self._hide_main_overlays(mark_deactivated=mark_deactivated)
+        if self.popout_window is not None:
+            self.popout_window.hide_overlay()
+            if mark_deactivated:
+                self.popout_window.mark_deactivated()
+
+    def should_allow_hover_overlay(self) -> bool:
+        app = QApplication.instance()
+        if app is None or app.applicationState() != Qt.ApplicationState.ApplicationActive:
+            return False
+        if not self.isVisible() or self.isMinimized() or not self.isActiveWindow():
+            return False
+        if self._awaiting_user_interaction:
+            cur_pos = QCursor.pos()
+            if self._activation_cursor_pos is None:
+                self._activation_cursor_pos = cur_pos
+                return False
+            if (cur_pos - self._activation_cursor_pos).manhattanLength() < 2:
+                return False
+            self._awaiting_user_interaction = False
+        return True
+
+    def _show_fullscreen_overlay_if_active(self):
+        if self.is_fullscreen_mode and not self._awaiting_user_interaction and self.isActiveWindow():
+            self.fs_overlay.show_overlay()
+
     # ---------------- HOVER & TIẾN ĐỘ ----------------
     def _on_video_mouse_moved(self):
+        if not self.should_allow_hover_overlay():
+            return
         if self.is_fullscreen_mode:
             self.show_fullscreen_cursor()
             self.fs_overlay.show_overlay()
@@ -886,7 +951,9 @@ class VideoPlayerApp(QMainWindow):
             self.restore_video_from_popout()
 
         self.is_fullscreen_mode = True
-        self.main_overlay.hide()
+        self._awaiting_user_interaction = False
+        self.main_overlay.hide_overlay()
+        self.controls_bar.hide_overlays()
 
         self.video_container.setParent(self.fullscreen_page)
         self.fullscreen_page_layout.addWidget(self.video_container)
@@ -903,7 +970,7 @@ class VideoPlayerApp(QMainWindow):
         self.stacked_widget.setCurrentIndex(2)
         self.showFullScreen()
         self.show_fullscreen_cursor()
-        QTimer.singleShot(150, self.fs_overlay.show_overlay)
+        QTimer.singleShot(150, self._show_fullscreen_overlay_if_active)
 
     def exit_fullscreen(self):
         if not self.is_fullscreen_mode:
@@ -911,7 +978,7 @@ class VideoPlayerApp(QMainWindow):
 
         self.is_fullscreen_mode = False
         self.restore_cursor()
-        self.fs_overlay.hide()
+        self.fs_overlay.hide_overlay()
 
         self.video_container.setParent(self.video_area_widget)
         self.video_area_layout.insertWidget(0, self.video_container)
@@ -942,8 +1009,7 @@ class VideoPlayerApp(QMainWindow):
         if self.is_fullscreen_mode:
             self.exit_fullscreen()
 
-        self.main_overlay.hide()
-        self.fs_overlay.hide()
+        self._hide_main_overlays(mark_deactivated=False)
         self.popout_window = FloatingVideoWindow(self)
 
         self.video_container.setMinimumHeight(0)
@@ -980,6 +1046,7 @@ class VideoPlayerApp(QMainWindow):
 
         # 4. Đóng popout window an toàn nếu còn mở
         if popout is not None:
+            popout.hide_overlay()
             popout.close()
 
         # 5. Kích hoạt cửa sổ chính nếu đang bị thu nhỏ
@@ -993,6 +1060,28 @@ class VideoPlayerApp(QMainWindow):
         self.player.set_hwnd(int(self.video_container.winId()))
 
     # ---------------- SỰ KIỆN CỬA SỔ & DRAG DROP ----------------
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange:
+            if not self.isActiveWindow():
+                active_win = QApplication.activeWindow()
+                if active_win not in (self.main_overlay, self.fs_overlay):
+                    if active_win is None:
+                        self.hide_all_overlays(mark_deactivated=True)
+                    else:
+                        self._hide_main_overlays(mark_deactivated=True)
+            else:
+                self._activation_cursor_pos = QCursor.pos()
+        elif event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self._hide_main_overlays(mark_deactivated=True)
+            if self.popout_window is not None and not self.popout_window.isActiveWindow():
+                self.popout_window.hide_overlay()
+                self.popout_window.mark_deactivated()
+
+    def hideEvent(self, event):
+        self._hide_main_overlays(mark_deactivated=True)
+        super().hideEvent(event)
+
     def showEvent(self, event):
         super().showEvent(event)
         setup_window_icon(self)
@@ -1000,14 +1089,17 @@ class VideoPlayerApp(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not self.is_fullscreen_mode:
-            self.main_overlay.reposition()
+            if self.main_overlay.isVisible():
+                self.main_overlay.reposition()
         else:
-            self.fs_overlay.reposition()
+            if self.fs_overlay.isVisible():
+                self.fs_overlay.reposition()
 
     def moveEvent(self, event):
         super().moveEvent(event)
         if not self.is_fullscreen_mode:
-            self.main_overlay.reposition()
+            if self.main_overlay.isVisible():
+                self.main_overlay.reposition()
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
@@ -1022,8 +1114,13 @@ class VideoPlayerApp(QMainWindow):
                 event.acceptProposedAction()
 
     def closeEvent(self, event):
-        self.main_overlay.hide()
-        self.fs_overlay.hide()
+        self.hide_all_overlays(mark_deactivated=False)
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.applicationStateChanged.disconnect(self._on_application_state_changed)
+            except (TypeError, RuntimeError):
+                pass
         if hasattr(self, 'preview_manager') and self.preview_manager:
             self.preview_manager.stop()
         if self.thumb_worker:

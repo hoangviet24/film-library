@@ -15,14 +15,31 @@ def get_base_dir():
         return exe_dir
     return os.path.dirname(os.path.abspath(__file__))
 
+def is_portable_mode() -> bool:
+    """
+    Kiểm tra xem ứng dụng có đang chạy ở chế độ Portable hay không
+    (dựa vào sự tồn tại của tệp đánh dấu `portable.mode` cạnh FluentMediaPlayer.exe).
+    """
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        return os.path.exists(os.path.join(exe_dir, "portable.mode"))
+    return False
+
 def get_user_data_dir():
     """
     Trả về thư mục lưu trữ dữ liệu người dùng (lịch sử, cache).
-    Trong môi trường cài đặt (Program Files), dữ liệu được lưu vào %APPDATA%\\FluentMediaPlayer
-    để không bị lỗi quyền ghi (PermissionError).
-    Trong môi trường dev (chạy source), lưu tại thư mục dự án để tiện debug.
+    - Ở chế độ Portable (có file portable.mode): lưu tại thư mục `data/` cạnh file .exe.
+    - Ở chế độ Cài đặt (Program Files): lưu vào %APPDATA%\\FluentMediaPlayer để tránh lỗi PermissionError.
+    - Ở môi trường dev (chạy source): lưu tại thư mục dự án.
     """
     if getattr(sys, 'frozen', False):
+        if is_portable_mode():
+            portable_data = os.path.join(os.path.dirname(sys.executable), "data")
+            try:
+                os.makedirs(portable_data, exist_ok=True)
+                return portable_data
+            except OSError:
+                pass
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~")
         data_dir = os.path.join(appdata, "FluentMediaPlayer")
         os.makedirs(data_dir, exist_ok=True)
