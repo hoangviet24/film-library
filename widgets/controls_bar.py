@@ -220,6 +220,11 @@ class PlayerControlsBar(QFrame):
 
     # ---------------- THUMBNAIL PREVIEW HOVER ----------------
     def _on_seek_hover_moved(self, val: int, pct: float, global_pos: QPoint):
+        if self.parent_app and hasattr(self.parent_app, "should_allow_hover_overlay"):
+            if not self.parent_app.should_allow_hover_overlay():
+                self.preview_popup.hide_preview()
+                return
+
         if self._total_ms <= 0:
             return
 
@@ -240,6 +245,11 @@ class PlayerControlsBar(QFrame):
 
     def _on_seek_hover_left(self):
         self.preview_popup.hide_preview()
+
+    def hide_overlays(self):
+        self.preview_popup.hide_preview()
+        if hasattr(self, "btn_speed") and self.btn_speed.menu() and self.btn_speed.menu().isVisible():
+            self.btn_speed.menu().hide()
 
     def update_preview_thumbnail(self, video_path: str, bucket_sec: int, pixmap):
         if self.preview_popup.isVisible():

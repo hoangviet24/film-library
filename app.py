@@ -104,8 +104,9 @@ def main():
 
     server.newConnection.connect(on_new_ipc_connection)
 
-    # 4. Tự động kiểm tra và đăng ký Windows Open With trong nền (HKCU)
-    QTimer.singleShot(1200, register_windows_open_with)
+    # 4. Tự động kiểm tra và đăng ký Windows Open With trong nền (HKCU) - bỏ qua ở chế độ Portable
+    if not config.is_portable_mode():
+        QTimer.singleShot(1200, register_windows_open_with)
 
     player.show()
 

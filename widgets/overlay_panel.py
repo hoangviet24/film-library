@@ -1,7 +1,7 @@
-from PyQt6.QtCore import Qt, QTimer, QPoint, QRect
+from PyQt6.QtCore import Qt, QTimer, QPoint, QRect, QEvent
 from PyQt6.QtGui import QCursor, QAction
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
     QMenu
 )
 from .clickable_slider import ClickableSlider
@@ -18,7 +18,12 @@ class VideoOverlayPanel(QWidget):
     Hỗ trợ 3 chế độ: "main", "fullscreen", "popout".
     """
     def __init__(self, target_widget, parent_app, mode="main"):
-        window_flags = Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint | Qt.WindowType.NoDropShadowWindowHint
+        window_flags = (
+            Qt.WindowType.ToolTip
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+        )
         super().__init__(None, window_flags)
         self.target_widget = target_widget
         self.parent_app = parent_app
@@ -33,6 +38,7 @@ class VideoOverlayPanel(QWidget):
         self.init_ui()
 
         self.hide_timer = QTimer(self)
+        self.hide_timer.setSingleShot(True)
         self.hide_timer.setInterval(2500)
         self.hide_timer.timeout.connect(self._on_hide_timeout)
 
@@ -369,9 +375,33 @@ class VideoOverlayPanel(QWidget):
             return QRect(global_pos.x(), global_pos.y(), self.target_widget.width(), self.target_widget.height())
         return QRect()
 
+    def is_owner_window_active(self) -> bool:
+        app = QApplication.instance()
+        if app is None or app.applicationState() != Qt.ApplicationState.ApplicationActive:
+            return False
+        if not self.target_widget or not self.target_widget.isVisible():
+            return False
+        owner_window = self.target_widget.window()
+        if owner_window is None or not owner_window.isVisible() or owner_window.isMinimized():
+            return False
+        return bool(owner_window.isActiveWindow() or self.isActiveWindow())
+
+    def hide_overlay(self):
+        self.hide_timer.stop()
+        if self.is_slider_seeking:
+            self.is_slider_seeking = False
+            if hasattr(self.parent_app, "_on_slider_released"):
+                self.parent_app._on_slider_released()
+            elif hasattr(self.parent_app, "on_slider_released"):
+                self.parent_app.on_slider_released()
+        if hasattr(self, 'preview_popup') and self.preview_popup:
+            self.preview_popup.hide_preview()
+        if self.isVisible():
+            self.hide()
+
     def reposition(self):
         target_rect = self.get_target_global_rect()
-        if not target_rect.isNull():
+        if not target_rect.isNull() and self.geometry() != target_rect:
             self.setGeometry(target_rect)
 
     def is_cursor_over_video(self) -> bool:
@@ -381,6 +411,9 @@ class VideoOverlayPanel(QWidget):
         return False
 
     def _on_slider_hover_moved(self, val: int, pct: float, global_pos: QPoint):
+        if not self.is_owner_window_active():
+            self.hide_overlay()
+            return
         if not hasattr(self.parent_app, "player"):
             return
         total_ms = self.parent_app.player.get_length()
@@ -407,45 +440,58 @@ class VideoOverlayPanel(QWidget):
             self.preview_popup.set_thumbnail(pixmap)
 
     def _on_hide_timeout(self):
+        if not self.is_owner_window_active():
+            self.hide_overlay()
+            return
         if self.is_slider_seeking:
             self.hide_timer.start()
             return
-        if hasattr(self, 'preview_popup'):
-            self.preview_popup.hide_preview()
-        self.hide()
+        self.hide_overlay()
         if self.mode == "fullscreen" and hasattr(self.parent_app, "hide_fullscreen_cursor"):
             self.parent_app.hide_fullscreen_cursor()
 
     def show_overlay(self):
-        if not self.target_widget or not self.target_widget.isVisible():
-            self.hide()
+        if not self.is_owner_window_active():
+            self.hide_overlay()
             return
         
         # Ở chế độ main, chỉ hiện khi chuột thật sự nằm trong khung video
         if self.mode == "main" and not self.is_cursor_over_video():
-            self.hide()
+            self.hide_overlay()
             return
 
         if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
             self.parent_app.show_fullscreen_cursor()
 
         self.reposition()
-        self.show()
-        self.raise_()
+        if not self.isVisible():
+            self.show()
+            self.raise_()
         self.hide_timer.start()
 
     def check_and_hide_if_left(self):
-        if not self.is_cursor_over_video():
-            self.hide()
+        if not self.is_owner_window_active() or not self.is_cursor_over_video():
+            self.hide_overlay()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and not self.is_owner_window_active():
+            self.hide_overlay()
 
     def enterEvent(self, event):
         super().enterEvent(event)
+        if not self.is_owner_window_active():
+            self.hide_overlay()
+            return
         if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
             self.parent_app.show_fullscreen_cursor()
         self.hide_timer.start()
 
     def mouseMoveEvent(self, event):
         super().mouseMoveEvent(event)
+        if not self.is_owner_window_active():
+            self.hide_overlay()
+            return
         if self.mode == "fullscreen" and hasattr(self.parent_app, "show_fullscreen_cursor"):
             self.parent_app.show_fullscreen_cursor()
         self.hide_timer.start()

@@ -1,7 +1,7 @@
 import os
 from PyQt6.QtCore import Qt, QEvent
-from PyQt6.QtGui import QIcon, QWheelEvent
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtGui import QIcon, QWheelEvent, QCursor
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout
 from .overlay_panel import VideoOverlayPanel
 from utils import get_app_icon
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "logo.png")
@@ -16,6 +16,8 @@ class FloatingVideoWindow(QWidget):
     def __init__(self, parent_app):
         super().__init__()
         self.parent_app = parent_app
+        self._awaiting_user_interaction = False
+        self._activation_cursor_pos = None
         
         self.setWindowTitle("Mini Player - Fluent Media Player")
         self.setGeometry(1000, 500, 520, 292)
@@ -41,13 +43,61 @@ class FloatingVideoWindow(QWidget):
         self.setMouseTracking(True)
         self.installEventFilter(self)
 
+    def hide_overlay(self):
+        if hasattr(self, "overlay") and self.overlay:
+            self.overlay.hide_overlay()
+
+    def mark_deactivated(self):
+        self._awaiting_user_interaction = True
+        self._activation_cursor_pos = None
+
+    def snapshot_activation_cursor(self):
+        self._activation_cursor_pos = QCursor.pos()
+
+    def _consume_hover_interaction(self) -> bool:
+        app = QApplication.instance()
+        if app is None or app.applicationState() != Qt.ApplicationState.ApplicationActive:
+            return False
+        if not self.isVisible() or self.isMinimized() or not self.isActiveWindow():
+            return False
+        if self._awaiting_user_interaction:
+            cur_pos = QCursor.pos()
+            if self._activation_cursor_pos is None:
+                self._activation_cursor_pos = cur_pos
+                return False
+            if (cur_pos - self._activation_cursor_pos).manhattanLength() < 2:
+                return False
+            self._awaiting_user_interaction = False
+        return True
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange:
+            if not self.isActiveWindow():
+                if QApplication.activeWindow() is not self.overlay:
+                    self.hide_overlay()
+                    self.mark_deactivated()
+            else:
+                self.snapshot_activation_cursor()
+        elif event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+            self.hide_overlay()
+            self.mark_deactivated()
+
+    def hideEvent(self, event):
+        self.hide_overlay()
+        self.mark_deactivated()
+        super().hideEvent(event)
+
     def eventFilter(self, source, event):
         if event.type() in (QEvent.Type.MouseMove, QEvent.Type.Enter):
-            self.overlay.show_overlay()
+            if self._consume_hover_interaction():
+                self.overlay.show_overlay()
         elif event.type() == QEvent.Type.MouseButtonDblClick:
+            self._awaiting_user_interaction = False
             self.parent_app.restore_video_from_popout()
             return True
         elif event.type() == QEvent.Type.Wheel:
+            self._awaiting_user_interaction = False
             delta = event.angleDelta().y()
             if delta > 0:
                 self.parent_app.change_volume(5)
@@ -58,20 +108,24 @@ class FloatingVideoWindow(QWidget):
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        self.overlay.reposition()
+        if self.overlay.isVisible():
+            self.overlay.reposition()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.overlay.reposition()
+        if self.overlay.isVisible():
+            self.overlay.reposition()
 
     def show_overlay(self):
-        self.overlay.show_overlay()
+        if self.isActiveWindow():
+            self._awaiting_user_interaction = False
+            self.overlay.show_overlay()
 
     def update_play_button(self, is_playing: bool):
         self.overlay.update_play_button(is_playing)
 
     def closeEvent(self, event):
-        self.overlay.hide()
+        self.overlay.hide_overlay()
         self.overlay.close()
         if getattr(self.parent_app, "popout_window", None) is self:
             self.parent_app.restore_video_from_popout()

@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import hashlib
 import time
+import zipfile
 from datetime import datetime
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,6 +22,7 @@ VERSION = "2.0.0"
 DIST_DIR = os.path.join(ROOT_DIR, "dist", "FluentMediaPlayer")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
 RELEASE_DIR = os.path.join(ROOT_DIR, "release")
+PORTABLE_DIR = os.path.join(RELEASE_DIR, "portable")
 INSTALLER_DIR = os.path.join(RELEASE_DIR, "installer")
 
 
@@ -152,22 +154,70 @@ def step_build_installer(iscc_path: str):
     return setup_exe
 
 
-def step_organize_release(setup_exe: str | None):
-    log("=== BƯỚC 5: ĐÓNG GÓI THƯ MỤC RELEASE VÀ BUILD-INFO ===")
+def step_build_portable():
+    log("=== BƯỚC 5: ĐÓNG GÓI PHIÊN BẢN PORTABLE (FOLDER + ZIP) ===")
+    os.makedirs(PORTABLE_DIR, exist_ok=True)
+
+    portable_app_dir = os.path.join(PORTABLE_DIR, "FluentMediaPlayer-Portable")
+    if os.path.exists(portable_app_dir):
+        shutil.rmtree(portable_app_dir)
+    shutil.copytree(DIST_DIR, portable_app_dir)
+
+    # Tạo tệp đánh dấu portable.mode để lưu toàn bộ dữ liệu vào ./data và không ghi Registry
+    marker_path = os.path.join(portable_app_dir, "portable.mode")
+    with open(marker_path, "w", encoding="utf-8") as f:
+        f.write("Portable Mode Enabled - User data is stored in ./data\n")
+
+    # Tạo hướng dẫn sử dụng nhanh cho bản Portable
+    readme_portable_path = os.path.join(portable_app_dir, "README-Portable.txt")
+    with open(readme_portable_path, "w", encoding="utf-8") as f:
+        f.write(
+            f"{APP_NAME} v{VERSION} (Portable Edition)\n"
+            "============================================================\n\n"
+            "1. Run FluentMediaPlayer.exe directly (no installation required).\n"
+            "2. Watch history and cached thumbnails are stored locally in ./data\n"
+            "   so you can copy or move this entire folder (e.g. to a USB drive).\n"
+            "3. Portable mode is controlled by the presence of 'portable.mode'.\n"
+            "   Do not remove 'portable.mode' if you want self-contained data storage.\n"
+        )
+
+    # Nén thành file .zip với thư mục gốc FluentMediaPlayer-Portable/ bên trong
+    zip_filename = f"FluentMediaPlayer-{VERSION}-Portable.zip"
+    zip_path = os.path.join(PORTABLE_DIR, zip_filename)
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+
+    log(f"Đang nén bản Portable thành: {zip_path} ...")
+    t0 = time.time()
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for root, _, files in os.walk(portable_app_dir):
+            for fname in files:
+                full_path = os.path.join(root, fname)
+                arcname = os.path.relpath(full_path, PORTABLE_DIR)
+                zf.write(full_path, arcname)
+
+    log(f"✓ Hoàn tất thư mục Portable: {portable_app_dir}")
+    log(f"✓ Hoàn tất tệp nén Portable ZIP trong {time.time() - t0:.1f}s: {zip_path} ({os.path.getsize(zip_path):,} bytes)")
+    return portable_app_dir, zip_path
+
+
+def step_organize_release(portable_app_dir: str, portable_zip: str, setup_exe: str | None):
+    log("=== BƯỚC 6: TẠO BUILD-INFO VÀ HOÀN THIỆN THƯ MỤC RELEASE ===")
     os.makedirs(RELEASE_DIR, exist_ok=True)
 
-    # 1. Sao chép bản standalone vào release/FluentMediaPlayer
-    rel_app_dir = os.path.join(RELEASE_DIR, "FluentMediaPlayer")
-    if os.path.exists(rel_app_dir):
-        shutil.rmtree(rel_app_dir)
-    shutil.copytree(DIST_DIR, rel_app_dir)
-    log(f"✓ Đã sao chép ứng dụng standalone sang: {rel_app_dir}")
+    # Dọn dẹp thư mục cũ release/FluentMediaPlayer nếu tồn tại từ các bản build trước
+    stale_dir = os.path.join(RELEASE_DIR, "FluentMediaPlayer")
+    if os.path.exists(stale_dir):
+        shutil.rmtree(stale_dir)
 
-    # 2. Tạo build-info.txt
     build_info_path = os.path.join(RELEASE_DIR, "build-info.txt")
-    exe_path = os.path.join(rel_app_dir, APP_EXE_NAME)
-    exe_size_str = f"{os.path.getsize(exe_path):,} bytes" if os.path.exists(exe_path) else "N/A"
-    exe_hash = calculate_sha256(exe_path) if os.path.exists(exe_path) else "N/A"
+    portable_exe_path = os.path.join(portable_app_dir, APP_EXE_NAME)
+    portable_exe_size = f"{os.path.getsize(portable_exe_path):,} bytes" if os.path.exists(portable_exe_path) else "N/A"
+    portable_exe_hash = calculate_sha256(portable_exe_path) if os.path.exists(portable_exe_path) else "N/A"
+
+    zip_size = f"{os.path.getsize(portable_zip):,} bytes" if os.path.exists(portable_zip) else "N/A"
+    zip_hash = calculate_sha256(portable_zip) if os.path.exists(portable_zip) else "N/A"
+
     setup_size_str = f"{os.path.getsize(setup_exe):,} bytes" if setup_exe and os.path.exists(setup_exe) else "N/A"
     setup_hash = calculate_sha256(setup_exe) if setup_exe and os.path.exists(setup_exe) else "N/A"
     git_commit = get_git_commit()
@@ -180,17 +230,22 @@ Product Version      : {VERSION}
 Build Timestamp      : {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
 Git Commit           : {git_commit}
 Python Environment   : Python {sys.version.split()[0]} ({sys.platform})
-Packaging Type       : Windows Standalone (onedir) + Inno Setup Installer
+Packaging Types      : Portable Edition (Folder + ZIP) & Windows Installer (Inno Setup)
 
 FILES & CHECKSUMS:
 --------------------------------------------------------------------------------
-1. Standalone Application Directory:
-   Path   : release/FluentMediaPlayer/
-   Binary : release/FluentMediaPlayer/{APP_EXE_NAME}
-   Size   : {exe_size_str}
-   SHA256 : {exe_hash}
+1. Portable Application Folder:
+   Path   : release/portable/FluentMediaPlayer-Portable/
+   Binary : release/portable/FluentMediaPlayer-Portable/{APP_EXE_NAME}
+   Size   : {portable_exe_size}
+   SHA256 : {portable_exe_hash}
 
-2. Windows Installer:
+2. Portable Archive (ZIP):
+   Path   : release/portable/{os.path.basename(portable_zip)}
+   Size   : {zip_size}
+   SHA256 : {zip_hash}
+
+3. Windows Installer:
    Path   : release/installer/FluentMediaPlayer-Setup.exe
    Size   : {setup_size_str}
    SHA256 : {setup_hash}
@@ -209,7 +264,7 @@ SYSTEM REQUIREMENTS:
 
 def main():
     log("==================================================")
-    log("BẮT ĐẦU QUY TRÌNH ĐÓNG GÓI VÀ TẠO BỘ CÀI ĐẶT WINDOWS")
+    log("BẮT ĐẦU QUY TRÌNH ĐÓNG GÓI PORTABLE & WINDOWS INSTALLER")
     log("==================================================")
     t_start = time.time()
 
@@ -217,7 +272,8 @@ def main():
     step_clean_temp_build()
     step_build_pyinstaller()
     setup_exe = step_build_installer(iscc_path)
-    step_organize_release(setup_exe)
+    portable_app_dir, portable_zip = step_build_portable()
+    step_organize_release(portable_app_dir, portable_zip, setup_exe)
 
     log("==================================================")
     log(f"🎉 TẤT CẢ CÁC BƯỚC ĐÓNG GÓI HOÀN TẤT THÀNH CÔNG TRONG {time.time() - t_start:.1f}s!")
