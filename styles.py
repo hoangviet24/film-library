@@ -74,39 +74,15 @@ SCROLLBAR_STYLE = f"""
     }}
 """
 
-# Thanh trượt tua tiến độ video (Seek Slider)
+# Thanh trượt tua tiến độ video (Seek Slider tối giản tinh tế)
 SEEK_SLIDER_STYLE = f"""
     QSlider::groove:horizontal {{
-        height: 6px;
-        background: rgba(255, 255, 255, 0.16);
-        border-radius: 3px;
-    }}
-    QSlider::sub-page:horizontal {{
-        background: {COLOR_ACCENT};
-        border-radius: 3px;
-    }}
-    QSlider::handle:horizontal {{
-        background: #FFFFFF;
-        width: 14px;
-        height: 14px;
-        margin: -4px 0;
-        border-radius: 7px;
-    }}
-    QSlider::handle:horizontal:hover {{
-        background: #FFFFFF;
-        width: 16px;
-        height: 16px;
-        margin: -5px 0;
-        border-radius: 8px;
-    }}
-"""
-
-# Thanh trượt âm lượng (Volume Slider)
-VOLUME_SLIDER_STYLE = f"""
-    QSlider::groove:horizontal {{
         height: 4px;
-        background: rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.16);
         border-radius: 2px;
+    }}
+    QSlider::groove:horizontal:hover {{
+        background: rgba(255, 255, 255, 0.24);
     }}
     QSlider::sub-page:horizontal {{
         background: {COLOR_ACCENT};
@@ -120,7 +96,39 @@ VOLUME_SLIDER_STYLE = f"""
         border-radius: 6px;
     }}
     QSlider::handle:horizontal:hover {{
-        background: #90CAF9;
+        background: #FFFFFF;
+        width: 14px;
+        height: 14px;
+        margin: -5px 0;
+        border-radius: 7px;
+        border: 2px solid {COLOR_ACCENT};
+    }}
+"""
+
+# Thanh trượt âm lượng (Volume Slider tối giản)
+VOLUME_SLIDER_STYLE = f"""
+    QSlider::groove:horizontal {{
+        height: 4px;
+        background: rgba(255, 255, 255, 0.16);
+        border-radius: 2px;
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {COLOR_ACCENT};
+        border-radius: 2px;
+    }}
+    QSlider::handle:horizontal {{
+        background: #FFFFFF;
+        width: 10px;
+        height: 10px;
+        margin: -3px 0;
+        border-radius: 5px;
+    }}
+    QSlider::handle:horizontal:hover {{
+        background: #FFFFFF;
+        width: 12px;
+        height: 12px;
+        margin: -4px 0;
+        border-radius: 6px;
     }}
 """
 
@@ -174,27 +182,104 @@ BTN_PRIMARY_STYLE = f"""
     }}
 """
 
-# Nút Play/Pause chính (Nổi bật hình tròn chuẩn 36px đồng bộ)
+# Nút Play/Pause chính (Nổi bật hình tròn chuẩn 38px tối giản)
 BTN_PLAY_STYLE = f"""
     QPushButton {{
         background-color: {COLOR_ACCENT};
         color: #FFFFFF;
         border: none;
-        border-radius: 18px;
+        border-radius: 19px;
         font-size: 15px;
         font-weight: bold;
-        width: 36px;
-        height: 36px;
-        min-width: 36px;
-        min-height: 36px;
-        max-width: 36px;
-        max-height: 36px;
+        width: 38px;
+        height: 38px;
+        min-width: 38px;
+        min-height: 38px;
+        max-width: 38px;
+        max-height: 38px;
     }}
     QPushButton:hover {{
         background-color: {COLOR_ACCENT_HOVER};
     }}
     QPushButton:pressed {{
         background-color: {COLOR_ACCENT_PRESSED};
+    }}
+"""
+
+# Khung thanh điều khiển Player tối giản (Minimalist Controls Card)
+PLAYER_CONTROLS_CARD_STYLE = f"""
+    QFrame {{
+        background-color: {COLOR_BG_CARD};
+        border: 1px solid {COLOR_BORDER_SUBTLE};
+        border-radius: 12px;
+    }}
+"""
+
+# Nút điều khiển Player tối giản (Ghost / Borderless khi nghỉ, hiện nền nhẹ khi hover)
+BTN_PLAYER_GHOST_STYLE = f"""
+    QPushButton {{
+        background-color: transparent;
+        color: #D8D8D8;
+        border: none;
+        border-radius: 8px;
+        padding: 0px 4px;
+        font-size: 13px;
+        font-weight: 500;
+    }}
+    QPushButton:hover {{
+        background-color: rgba(255, 255, 255, 0.10);
+        color: #FFFFFF;
+    }}
+    QPushButton:pressed {{
+        background-color: rgba(255, 255, 255, 0.05);
+    }}
+    QPushButton:disabled {{
+        background-color: transparent;
+        color: {COLOR_TEXT_MUTED};
+    }}
+"""
+
+# Nút hiển thị tốc độ phát (ẩn menu-indicator mặc định để không bao giờ bị cắt chữ)
+BTN_PLAYER_SPEED_STYLE = f"""
+    QPushButton {{
+        background-color: rgba(255, 255, 255, 0.06);
+        color: #EAEAEA;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 8px;
+        padding: 0px 10px;
+        font-size: 12px;
+        font-weight: 600;
+        min-height: 30px;
+        max-height: 30px;
+    }}
+    QPushButton:hover {{
+        background-color: rgba(255, 255, 255, 0.13);
+        border-color: rgba(255, 255, 255, 0.22);
+        color: #FFFFFF;
+    }}
+    QPushButton:pressed {{
+        background-color: rgba(255, 255, 255, 0.05);
+    }}
+    QPushButton::menu-indicator {{
+        image: none;
+        width: 0px;
+    }}
+"""
+
+# Trạng thái Active cho nút bật/tắt trên Player Bar (ví dụ: Playlist)
+BTN_PLAYER_ACTIVE_STYLE = f"""
+    QPushButton {{
+        background-color: rgba(0, 120, 212, 0.22);
+        color: #60B5FF;
+        border: 1px solid rgba(0, 120, 212, 0.45);
+        border-radius: 8px;
+        padding: 0px 4px;
+        font-size: 13px;
+        font-weight: 600;
+    }}
+    QPushButton:hover {{
+        background-color: rgba(0, 120, 212, 0.30);
+        color: #FFFFFF;
     }}
 """
 

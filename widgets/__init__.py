@@ -3,6 +3,7 @@ from .clickable_slider import ClickableSlider
 from .episode_item import EpisodeItemWidget
 from .floating_window import FloatingVideoWindow
 from .landing_widget import LandingPage
+from .marquee_label import MarqueeLabel
 from .controls_bar import PlayerControlsBar
 from .sidebar_widget import PlaylistSidebar
 from .overlay_panel import VideoOverlayPanel
@@ -17,6 +18,7 @@ __all__ = [
     "EpisodeItemWidget",
     "FloatingVideoWindow",
     "LandingPage",
+    "MarqueeLabel",
     "PlayerControlsBar",
     "PlaylistSidebar",
     "VideoOverlayPanel",
