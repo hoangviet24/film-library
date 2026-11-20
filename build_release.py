@@ -18,7 +18,7 @@ from datetime import datetime
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_NAME = "Fluent Media Player"
 APP_EXE_NAME = "FluentMediaPlayer.exe"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 DIST_DIR = os.path.join(ROOT_DIR, "dist", "FluentMediaPlayer")
 BUILD_DIR = os.path.join(ROOT_DIR, "build")
 RELEASE_DIR = os.path.join(ROOT_DIR, "release")
@@ -125,6 +125,16 @@ def step_build_pyinstaller():
         log(f"❌ LỖI: Không tìm thấy tệp thực thi đầu ra: {exe_path}")
         sys.exit(1)
     log(f"✓ Tệp thực thi đầu ra: {exe_path} ({os.path.getsize(exe_path):,} bytes)")
+
+    try:
+        from security import generate_integrity_manifest
+        manifest_path = generate_integrity_manifest(
+            DIST_DIR,
+            os.path.join(DIST_DIR, "_internal", "integrity_manifest.json"),
+        )
+        log(f"✓ Đã tạo manifest kiểm tra toàn vẹn: {manifest_path}")
+    except Exception as exc:
+        log(f"⚠ Cảnh báo không thể tạo integrity_manifest.json: {exc}")
 
 
 def step_build_installer(iscc_path: str):

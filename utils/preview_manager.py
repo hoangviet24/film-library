@@ -1,7 +1,17 @@
 import os
-import cv2
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, QMutex, QMutexLocker, QWaitCondition
 from PyQt6.QtGui import QImage, QPixmap
+from config import VALID_VIDEO_EXTENSIONS
+from security import FileSecurityError, validate_media_input
+
+try:
+    import cv2
+    if hasattr(cv2, "setLogLevel"):
+        cv2.setLogLevel(0)
+    HAS_OPENCV = True
+except ImportError:
+    cv2 = None
+    HAS_OPENCV = False
 
 class _PreviewWorker(QThread):
     image_ready = pyqtSignal(str, int, QImage)  # video_path, bucket_sec, qimage
@@ -46,6 +56,8 @@ class _PreviewWorker(QThread):
             self._current_cap_path = None
 
     def run(self):
+        if not HAS_OPENCV:
+            return
         while True:
             req = None
             with QMutexLocker(self._mutex):
@@ -60,15 +72,13 @@ class _PreviewWorker(QThread):
                 continue
 
             video_path, bucket_sec = req
-            if not os.path.exists(video_path):
-                continue
-
             try:
+                abs_video = validate_media_input(video_path, VALID_VIDEO_EXTENSIONS)
                 # Mở hoặc tái sử dụng VideoCapture
-                if self._cap is None or self._current_cap_path != video_path:
+                if self._cap is None or self._current_cap_path != abs_video:
                     self._release_cap()
-                    self._cap = cv2.VideoCapture(video_path)
-                    self._current_cap_path = video_path
+                    self._cap = cv2.VideoCapture(abs_video)
+                    self._current_cap_path = abs_video
 
                 if not self._cap.isOpened():
                     self._release_cap()
@@ -90,8 +100,8 @@ class _PreviewWorker(QThread):
 
                 if self._running:
                     self.image_ready.emit(video_path, bucket_sec, qimg)
-            except Exception as e:
-                pass
+            except (FileSecurityError, Exception):
+                self._release_cap()
 
 
 class PreviewManager(QObject):
@@ -108,9 +118,12 @@ class PreviewManager(QObject):
         self._cache = {}  # (video_path, bucket_sec): QPixmap
         self._max_cache = 300
         self._current_video_path = None
-        self._worker = _PreviewWorker()
-        self._worker.image_ready.connect(self._on_image_ready)
-        self._worker.start()
+        if HAS_OPENCV:
+            self._worker = _PreviewWorker()
+            self._worker.image_ready.connect(self._on_image_ready)
+            self._worker.start()
+        else:
+            self._worker = None
 
     def set_video(self, video_path: str):
         if self._current_video_path != video_path:
@@ -123,7 +136,7 @@ class PreviewManager(QObject):
         return self._cache.get((video_path, bucket_sec))
 
     def request_preview(self, video_path: str, msec: int):
-        if not video_path:
+        if not HAS_OPENCV or self._worker is None or not video_path:
             return
         bucket_sec = int(round(msec / 2000.0) * 2)  # Gom nhóm 2 giây
         pixmap = self.get_cached_preview(video_path, bucket_sec)
@@ -144,7 +157,8 @@ class PreviewManager(QObject):
 
     def release_video(self, video_path: str = None):
         """Giải phóng file handle VideoCapture để cho phép đổi tên hoặc xóa file trên Windows."""
-        self._worker.release_current_capture()
+        if self._worker is not None:
+            self._worker.release_current_capture()
         if video_path:
             norm = os.path.normcase(os.path.abspath(video_path))
             keys_to_remove = [
@@ -157,4 +171,5 @@ class PreviewManager(QObject):
                 self._current_video_path = None
 
     def stop(self):
-        self._worker.stop()
+        if self._worker is not None:
+            self._worker.stop()

@@ -1,7 +1,7 @@
 import os
 import sys
+import time
 import shutil
-import subprocess
 import vlc
 from PyQt6.QtCore import Qt, QTimer, QSize, QEvent
 from PyQt6.QtWidgets import (
@@ -20,13 +20,23 @@ from styles import (
 )
 from utils import (
     ThumbnailWorker, load_history, save_history, PreviewManager,
-    setup_window_icon, invalidate_metadata_cache
+    setup_window_icon, invalidate_metadata_cache,
+    upsert_history_progress, rename_history_entry, delete_history_entry,
+    close_history_db,
+)
+from security import (
+    AuthorizedScope, FileSecurityError, clear_application_data,
+    get_safe_thumbnail_path, is_reparse_point_or_symlink,
+    open_in_explorer_safely, safe_delete_file, safe_rename_file,
+    safe_walk_videos, sanitize_for_log, validate_directory_path,
+    validate_media_input, validate_new_filename, validate_video_path,
 )
 from widgets import (
     LandingPage,
     PlayerControlsBar,
     PlaylistSidebar,
     FloatingVideoWindow,
+    FullscreenVideoWindow,
     VideoOverlayPanel,
     VlcVideoWidget,
     VideoPropertiesDialog
@@ -57,15 +67,20 @@ class VideoPlayerApp(QMainWindow):
         self.player.volume_changed.connect(self._on_volume_changed)
         self.player.rate_changed.connect(self._on_rate_changed)
 
-        # Dữ liệu ứng dụng
+        # Dữ liệu & phạm vi bảo mật ứng dụng
+        self.file_scope = AuthorizedScope()
         self.history = load_history()
+        self._last_history_save_ts = 0.0
         self.current_video_path = None
         self.movies_data = {}
         self.popout_window = None
+        self.fullscreen_window = None
         self.is_user_seeking = False
         self.is_fullscreen_mode = False
         self.is_playlist_visible = True
         self._was_maximized = False
+        self._normal_geometry = None
+        self._entering_fullscreen = False
         self._cursor_hidden = False
         self._awaiting_user_interaction = False
         self._activation_cursor_pos = None
@@ -295,27 +310,46 @@ class VideoPlayerApp(QMainWindow):
             self.play_single_file(file_path)
 
     def handle_dropped_path(self, path: str):
-        if os.path.isdir(path):
-            self.load_folder(path)
-        elif os.path.isfile(path) and path.lower().endswith(VALID_VIDEO_EXTENSIONS):
-            self.play_single_file(path)
+        try:
+            if os.path.isdir(path):
+                safe_dir = validate_directory_path(path)
+                self.load_folder(safe_dir)
+            else:
+                safe_file = validate_media_input(path, VALID_VIDEO_EXTENSIONS)
+                self.play_single_file(safe_file)
+        except FileSecurityError as exc:
+            QMessageBox.warning(
+                self,
+                "Đường dẫn không hợp lệ",
+                sanitize_for_log(str(exc)),
+            )
 
     def load_folder(self, root_folder: str):
-        self.lbl_folder_path.setText(root_folder)
-        self.movies_data.clear()
-
         try:
-            for root, dirs, files in os.walk(root_folder):
-                v_files = [os.path.join(root, f) for f in files if f.lower().endswith(VALID_VIDEO_EXTENSIONS)]
-                if v_files:
-                    rel = os.path.relpath(root, root_folder)
-                    name = "Tất cả tập phim" if rel == "." else rel
-                    self.movies_data[name] = sorted(v_files)
-        except Exception as e:
-            print(f"Lỗi đọc thư mục: {e}")
-
-        if not self.movies_data:
+            safe_root = validate_directory_path(root_folder)
+            movies = safe_walk_videos(safe_root, VALID_VIDEO_EXTENSIONS)
+        except FileSecurityError as exc:
+            QMessageBox.warning(
+                self,
+                "Không thể mở thư mục",
+                sanitize_for_log(str(exc)),
+            )
             return
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Lỗi đọc thư mục",
+                f"Không thể đọc thư mục đã chọn:\n{sanitize_for_log(str(exc))}",
+            )
+            return
+
+        if not movies:
+            return
+
+        self.file_scope.authorize_directory(safe_root)
+        self.lbl_folder_path.setText(safe_root)
+        self.movies_data.clear()
+        self.movies_data.update(movies)
 
         self.stacked_widget.setCurrentIndex(1)
         self.attach_video_to_main()
@@ -326,48 +360,99 @@ class VideoPlayerApp(QMainWindow):
             self.play_video_file(self.movies_data[first_group][0])
 
     def play_single_file(self, file_path: str):
-        folder = os.path.dirname(file_path)
-        self.lbl_folder_path.setText(folder)
-        filename = os.path.basename(file_path)
-        
-        # Quét các tệp cùng thư mục để tạo danh sách tập liền kề
-        sibling_videos = sorted([
-            os.path.join(folder, f) for f in os.listdir(folder) 
-            if f.lower().endswith(VALID_VIDEO_EXTENSIONS)
-        ])
-        if not sibling_videos:
-            sibling_videos = [file_path]
+        try:
+            safe_file = validate_media_input(file_path, VALID_VIDEO_EXTENSIONS)
+        except FileSecurityError as exc:
+            QMessageBox.warning(
+                self,
+                "Không thể mở tệp video",
+                sanitize_for_log(str(exc)),
+            )
+            return
 
+        folder = os.path.dirname(safe_file)
+        self.lbl_folder_path.setText(folder)
+        self.file_scope.authorize_file(safe_file)
+
+        # Quét an toàn các tệp cùng thư mục (bỏ qua symlink/reparse point & tệp hỏng)
+        sibling_videos = []
+        try:
+            for f in sorted(os.listdir(folder)):
+                if not f.lower().endswith(VALID_VIDEO_EXTENSIONS):
+                    continue
+                cand = os.path.normpath(os.path.join(folder, f))
+                if is_reparse_point_or_symlink(cand):
+                    continue
+                try:
+                    sibling_videos.append(validate_video_path(cand, VALID_VIDEO_EXTENSIONS))
+                except FileSecurityError:
+                    continue
+        except OSError:
+            sibling_videos = []
+
+        if not sibling_videos or safe_file not in sibling_videos:
+            sibling_videos = [safe_file]
+
+        self.file_scope.authorize_files(sibling_videos)
         self.movies_data = {"Tập phim cùng thư mục": sibling_videos}
         self.stacked_widget.setCurrentIndex(1)
         self.attach_video_to_main()
         self.sidebar.set_movies_data(self.movies_data, self.history)
-        self.play_video_file(file_path)
+        self.play_video_file(safe_file)
+
+    def _get_history_entry(self, file_path: str) -> dict:
+        if file_path in self.history:
+            return self.history[file_path]
+        target_norm = os.path.normcase(os.path.abspath(file_path))
+        for k, v in self.history.items():
+            if os.path.normcase(os.path.abspath(k)) == target_norm:
+                return v
+        return {}
+
+    def _flush_current_progress(self):
+        if self.current_video_path and self.current_video_path in self.history:
+            entry = self.history[self.current_video_path]
+            upsert_history_progress(
+                self.current_video_path,
+                entry.get("pos", 0.0),
+                entry.get("pct", 0.0),
+            )
+            self._last_history_save_ts = time.monotonic()
 
     def play_video_file(self, file_path: str):
-        if not file_path or not os.path.exists(file_path):
+        self._flush_current_progress()
+        try:
+            safe_path = validate_media_input(file_path, VALID_VIDEO_EXTENSIONS)
+        except FileSecurityError as exc:
             QMessageBox.warning(
                 self,
-                "Không tìm thấy tệp",
-                f"Tệp video không còn tồn tại trên hệ thống:\n{file_path}"
+                "Không thể phát video",
+                f"Tệp video không tồn tại hoặc không hợp lệ:\n{sanitize_for_log(str(exc))}",
             )
             return
 
-        self.current_video_path = file_path
-        filename = os.path.basename(file_path)
+        if not self.player.load_media(safe_path):
+            QMessageBox.warning(
+                self,
+                "Không thể phát video",
+                f"Ứng dụng không thể giải mã tệp video này:\n{os.path.basename(safe_path)}",
+            )
+            return
 
-        self.preview_manager.set_video(file_path)
+        self.current_video_path = safe_path
+        filename = os.path.basename(safe_path)
+
+        self.preview_manager.set_video(safe_path)
         self.attach_video_to_main()
-        self.player.load_media(file_path)
         self.player.play()
 
         # Cập nhật thông tin giao diện
         self.controls_bar.update_title(filename)
         self.fs_overlay.set_title(filename)
-        self.sidebar.select_episode(file_path)
+        self.sidebar.select_episode(safe_path)
 
         # Khôi phục vị trí xem trước đó
-        history_info = self.history.get(file_path, {})
+        history_info = self._get_history_entry(safe_path)
         last_sec = history_info.get("pos", 0)
         if last_sec > 1:
             QTimer.singleShot(350, lambda: self.player.set_time(int(last_sec * 1000)))
@@ -385,7 +470,27 @@ class VideoPlayerApp(QMainWindow):
         if not file_paths:
             return
 
-        added = self.sidebar.add_videos_to_playlist(file_paths, self.history)
+        valid_paths = []
+        rejected = []
+        for raw_p in file_paths:
+            try:
+                valid_paths.append(validate_media_input(raw_p, VALID_VIDEO_EXTENSIONS))
+            except FileSecurityError as exc:
+                rejected.append(f"{os.path.basename(raw_p)}: {exc}")
+
+        if rejected:
+            QMessageBox.warning(
+                self,
+                "Một số tệp không hợp lệ",
+                "Các tệp sau bị từ chối vì không hợp lệ hoặc không an toàn:\n\n"
+                + sanitize_for_log("\n".join(rejected[:5])),
+            )
+
+        if not valid_paths:
+            return
+
+        self.file_scope.authorize_files(valid_paths)
+        added = self.sidebar.add_videos_to_playlist(valid_paths, self.history)
         if not added:
             return
 
@@ -403,18 +508,28 @@ class VideoPlayerApp(QMainWindow):
         if not self.current_video_path:
             self.play_video_file(added[0])
 
+    def _restore_active_playback(self, file_path: str, was_playing: bool, saved_time_ms: int):
+        if not os.path.exists(file_path):
+            return
+        if self.player.load_media(file_path):
+            if was_playing:
+                self.player.play()
+            else:
+                self.player.pause()
+            if saved_time_ms > 0:
+                QTimer.singleShot(250, lambda: self.player.set_time(saved_time_ms))
+
     def rename_video_in_playlist(self, file_path: str):
-        """Đổi tên tệp video trực tiếp trên ổ đĩa và cập nhật đồng bộ Playlist & trình phát."""
+        """Đổi tên tệp video an toàn trên ổ đĩa và đồng bộ SQLite Database & trình phát."""
         if not file_path or not os.path.exists(file_path):
             QMessageBox.warning(self, "Lỗi đổi tên", "Tệp video không tồn tại trên ổ đĩa.")
             return
 
         abs_old = os.path.abspath(file_path)
-        folder = os.path.dirname(abs_old)
         old_filename = os.path.basename(abs_old)
         old_stem, old_ext = os.path.splitext(old_filename)
 
-        # Tạo hộp thoại đổi tên theo phong cách Fluent Dark UI
+        # Hộp thoại đổi tên theo phong cách Fluent Dark UI
         dlg = QDialog(self)
         dlg.setWindowTitle("Rename Video")
         dlg.setMinimumWidth(420)
@@ -458,32 +573,13 @@ class VideoPlayerApp(QMainWindow):
         if not new_raw:
             return
 
-        # Giữ nguyên phần mở rộng gốc nếu người dùng không nhập hoặc nhập khác
-        if not new_raw.lower().endswith(old_ext.lower()):
-            new_filename = new_raw + old_ext
-        else:
-            new_filename = new_raw
-
-        if new_filename == old_filename:
+        try:
+            validated_name = validate_new_filename(new_raw, old_ext)
+        except FileSecurityError as exc:
+            QMessageBox.warning(self, "Tên tệp không hợp lệ", str(exc))
             return
 
-        # Kiểm tra ký tự không hợp lệ của Windows
-        invalid_chars = '<>:"/\\|?*'
-        if any(c in new_filename for c in invalid_chars):
-            QMessageBox.warning(
-                self,
-                "Tên tệp không hợp lệ",
-                f"Tên tệp không được chứa các ký tự đặc biệt sau:\n{invalid_chars}"
-            )
-            return
-
-        abs_new = os.path.join(folder, new_filename)
-        if os.path.exists(abs_new) and os.path.normcase(abs_new) != os.path.normcase(abs_old):
-            QMessageBox.warning(
-                self,
-                "Trùng tên tệp",
-                f"Đã tồn tại một tệp khác cùng tên trong thư mục:\n{new_filename}"
-            )
+        if validated_name == old_filename:
             return
 
         is_current = bool(
@@ -496,48 +592,52 @@ class VideoPlayerApp(QMainWindow):
         # Giải phóng file handle trước khi rename trên Windows
         self.preview_manager.release_video(abs_old)
         if is_current:
+            self._flush_current_progress()
             was_playing = self.player.is_playing()
             saved_time_ms = max(0, self.player.get_time())
             self.player.release_media()
 
         try:
-            os.rename(abs_old, abs_new)
-        except Exception as e:
-            QMessageBox.critical(
+            abs_new = safe_rename_file(
+                abs_old,
+                validated_name,
+                old_ext,
+                scope=self.file_scope,
+            )
+        except FileSecurityError as exc:
+            QMessageBox.warning(
                 self,
                 "Không thể đổi tên tệp",
-                f"Hệ điều hành từ chối đổi tên tệp:\n{e}"
+                sanitize_for_log(str(exc)),
             )
-            # Khôi phục phát lại tệp cũ nếu đổi tên thất bại
-            if is_current and os.path.exists(abs_old):
-                self.player.load_media(abs_old)
-                if was_playing:
-                    self.player.play()
-                if saved_time_ms > 0:
-                    QTimer.singleShot(250, lambda: self.player.set_time(saved_time_ms))
+            if is_current:
+                self._restore_active_playback(abs_old, was_playing, saved_time_ms)
             return
 
-        # Đổi tên ảnh thumbnail cache tương ứng (nếu có)
+        new_filename = os.path.basename(abs_new)
+
+        # Di chuyển thumbnail hash tương ứng (nếu có)
         try:
-            old_thumb = os.path.join(THUMB_CACHE_DIR, f"{old_filename}.jpg")
-            new_thumb = os.path.join(THUMB_CACHE_DIR, f"{new_filename}.jpg")
-            if os.path.exists(old_thumb) and not os.path.exists(new_thumb):
-                shutil.move(old_thumb, new_thumb)
+            old_thumb = get_safe_thumbnail_path(abs_old, THUMB_CACHE_DIR)
+            new_thumb = get_safe_thumbnail_path(abs_new, THUMB_CACHE_DIR)
+            if os.path.exists(old_thumb) and old_thumb != new_thumb:
+                os.replace(old_thumb, new_thumb)
         except Exception:
             pass
 
         invalidate_metadata_cache(abs_old)
 
-        # Cập nhật History
+        # Cập nhật đồng bộ SQLite Database & memory history
+        old_norm = os.path.normcase(abs_old)
         for k in list(self.history.keys()):
-            if os.path.normcase(os.path.abspath(k)) == os.path.normcase(abs_old):
+            if os.path.normcase(os.path.abspath(k)) == old_norm:
                 self.history[abs_new] = self.history.pop(k)
-        save_history(self.history)
+        rename_history_entry(abs_old, abs_new)
 
         # Cập nhật self.movies_data & Sidebar
         for grp, paths in self.movies_data.items():
             for idx, p in enumerate(paths):
-                if os.path.normcase(os.path.abspath(p)) == os.path.normcase(abs_old):
+                if os.path.normcase(os.path.abspath(p)) == old_norm:
                     paths[idx] = abs_new
         self.sidebar.rename_video_item(abs_old, abs_new)
 
@@ -548,13 +648,7 @@ class VideoPlayerApp(QMainWindow):
             self.controls_bar.update_title(new_filename)
             self.fs_overlay.set_title(new_filename)
             self.sidebar.select_episode(abs_new)
-            self.player.load_media(abs_new)
-            if was_playing:
-                self.player.play()
-            else:
-                self.player.pause()
-            if saved_time_ms > 0:
-                QTimer.singleShot(250, lambda: self.player.set_time(saved_time_ms))
+            self._restore_active_playback(abs_new, was_playing, saved_time_ms)
 
     def remove_video_from_playlist(self, file_path: str):
         """Xóa video khỏi danh sách phát hiện tại nhưng KHÔNG xóa tệp gốc trên ổ đĩa."""
@@ -581,7 +675,7 @@ class VideoPlayerApp(QMainWindow):
             self._handle_active_video_removed(next_candidate)
 
     def delete_video_from_disk(self, file_path: str):
-        """Xóa vĩnh viễn tệp video khỏi ổ đĩa (có hộp thoại xác nhận an toàn)."""
+        """Chuyển tệp video vào Windows Recycle Bin (có hộp thoại xác nhận an toàn)."""
         if not file_path or not os.path.exists(file_path):
             QMessageBox.warning(self, "Không tìm thấy tệp", "Tệp video không còn tồn tại trên ổ đĩa.")
             return
@@ -590,12 +684,12 @@ class VideoPlayerApp(QMainWindow):
         filename = os.path.basename(abs_target)
 
         msg = QMessageBox(self)
-        msg.setWindowTitle("Xác nhận xóa tệp vĩnh viễn")
+        msg.setWindowTitle("Xác nhận chuyển video vào Thùng rác")
         msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setText(f"Bạn có chắc chắn muốn xóa vĩnh viễn tệp video này khỏi ổ đĩa?\n\n📄 {filename}")
+        msg.setText(f"Bạn có chắc chắn muốn chuyển tệp video này vào Thùng rác (Recycle Bin)?\n\n📄 {filename}")
         msg.setInformativeText(
             f"Đường dẫn: {abs_target}\n\n"
-            "Lưu ý: Thao tác này sẽ xóa file gốc trên máy tính. "
+            "Lưu ý: Tệp sẽ được chuyển vào Windows Recycle Bin (có thể khôi phục lại). "
             "Nếu chỉ muốn bỏ video khỏi danh sách phát, hãy chọn 'Remove from Playlist'."
         )
         msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
@@ -625,29 +719,65 @@ class VideoPlayerApp(QMainWindow):
             self.current_video_path
             and os.path.normcase(os.path.abspath(self.current_video_path)) == target_norm
         )
+        was_playing = self.player.is_playing() if is_current else False
+        saved_time_ms = max(0, self.player.get_time()) if is_current else 0
 
-        # Giải phóng mọi file handle (VLC & OpenCV Preview) trước khi xóa trên Windows
+        # Giải phóng mọi file handle (VLC & OpenCV Preview) trước khi chuyển vào Thùng rác
         self.preview_manager.release_video(abs_target)
         if is_current:
             self.player.release_media()
 
         try:
-            os.remove(abs_target)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "Lỗi xóa tệp",
-                f"Không thể xóa tệp khỏi ổ đĩa:\n{e}"
+            safe_delete_file(
+                abs_target,
+                scope=self.file_scope,
+                use_recycle_bin=True,
             )
-            return
+        except FileSecurityError as exc:
+            if exc.code == "recycle_failed":
+                ans = QMessageBox.question(
+                    self,
+                    "Recycle Bin không khả dụng",
+                    f"Không thể đưa tệp vào Thùng rác ({sanitize_for_log(str(exc))}).\n\n"
+                    f"Bạn có muốn XÓA VĨNH VIỄN tệp '{filename}' khỏi ổ đĩa không?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if ans == QMessageBox.StandardButton.Yes:
+                    try:
+                        safe_delete_file(
+                            abs_target,
+                            scope=self.file_scope,
+                            use_recycle_bin=False,
+                        )
+                    except FileSecurityError as exc2:
+                        QMessageBox.critical(self, "Lỗi xóa tệp", sanitize_for_log(str(exc2)))
+                        if is_current:
+                            self._restore_active_playback(abs_target, was_playing, saved_time_ms)
+                        return
+                else:
+                    if is_current:
+                        self._restore_active_playback(abs_target, was_playing, saved_time_ms)
+                    return
+            else:
+                QMessageBox.critical(self, "Không thể xóa tệp", sanitize_for_log(str(exc)))
+                if is_current and exc.code != "not_found":
+                    self._restore_active_playback(abs_target, was_playing, saved_time_ms)
+                return
 
         invalidate_metadata_cache(abs_target)
+        try:
+            thumb_path = get_safe_thumbnail_path(abs_target, THUMB_CACHE_DIR)
+            if os.path.exists(thumb_path):
+                os.remove(thumb_path)
+        except Exception:
+            pass
 
-        # Xóa khỏi lịch sử xem
+        # Xóa đồng bộ khỏi lịch sử xem & SQLite database
         for k in list(self.history.keys()):
             if os.path.normcase(os.path.abspath(k)) == target_norm:
                 self.history.pop(k, None)
-        save_history(self.history)
+        delete_history_entry(abs_target)
 
         # Xóa khỏi self.movies_data & Sidebar
         for grp, paths in list(self.movies_data.items()):
@@ -679,20 +809,15 @@ class VideoPlayerApp(QMainWindow):
                 self.popout_window.overlay.update_time("00:00", "00:00")
 
     def open_video_file_location(self, file_path: str):
-        """Mở thư mục chứa video bằng Windows File Explorer và bôi đen tệp."""
-        if not file_path or not os.path.exists(file_path):
-            QMessageBox.warning(self, "Không tìm thấy tệp", "Tệp video không tồn tại trên hệ thống.")
-            return
-
-        norm_path = os.path.normpath(os.path.abspath(file_path))
-        if sys.platform.startswith("win"):
-            subprocess.Popen(f'explorer /select,"{norm_path}"')
-        else:
-            folder = os.path.dirname(norm_path)
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", norm_path])
-            else:
-                subprocess.Popen(["xdg-open", folder])
+        """Mở thư mục chứa video an toàn bằng Windows Shell API."""
+        try:
+            open_in_explorer_safely(file_path)
+        except (FileSecurityError, Exception) as exc:
+            QMessageBox.warning(
+                self,
+                "Không tìm thấy tệp",
+                sanitize_for_log(str(exc)),
+            )
 
     def show_video_properties(self, file_path: str):
         """Hiển thị cửa sổ thuộc tính chi tiết của video (Video Properties)."""
@@ -722,13 +847,13 @@ class VideoPlayerApp(QMainWindow):
     def seek_relative(self, seconds: float):
         self.player.seek_relative(seconds)
         if self.is_fullscreen_mode:
-            if self.isActiveWindow():
+            if self._is_active_player_window():
                 self._awaiting_user_interaction = False
                 self.fs_overlay.show_overlay()
         elif self.popout_window:
             self.popout_window.show_overlay()
         else:
-            if self.isActiveWindow():
+            if self._is_active_player_window():
                 self._awaiting_user_interaction = False
                 self.main_overlay.show_overlay()
 
@@ -748,33 +873,33 @@ class VideoPlayerApp(QMainWindow):
     def on_slider_released(self):
         self._on_slider_released()
 
+    def _apply_cursor_to_fullscreen_targets(self, cursor=None):
+        targets = [self, self.video_container, self.fullscreen_page]
+        if hasattr(self, "fullscreen_window") and self.fullscreen_window is not None:
+            targets.append(self.fullscreen_window)
+        if hasattr(self, "fs_overlay") and self.fs_overlay is not None:
+            targets.append(self.fs_overlay)
+        for target in targets:
+            if cursor is None:
+                target.unsetCursor()
+            else:
+                target.setCursor(cursor)
+
     def show_fullscreen_cursor(self):
         if self._cursor_hidden:
             self._cursor_hidden = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-            self.video_container.setCursor(Qt.CursorShape.ArrowCursor)
-            self.fullscreen_page.setCursor(Qt.CursorShape.ArrowCursor)
-            if hasattr(self, 'fs_overlay') and self.fs_overlay:
-                self.fs_overlay.setCursor(Qt.CursorShape.ArrowCursor)
+            self._apply_cursor_to_fullscreen_targets(Qt.CursorShape.ArrowCursor)
 
     def hide_fullscreen_cursor(self):
         if not self.is_fullscreen_mode:
             return
         if not self.is_user_seeking:
             self._cursor_hidden = True
-            self.setCursor(Qt.CursorShape.BlankCursor)
-            self.video_container.setCursor(Qt.CursorShape.BlankCursor)
-            self.fullscreen_page.setCursor(Qt.CursorShape.BlankCursor)
-            if hasattr(self, 'fs_overlay') and self.fs_overlay:
-                self.fs_overlay.setCursor(Qt.CursorShape.BlankCursor)
+            self._apply_cursor_to_fullscreen_targets(Qt.CursorShape.BlankCursor)
 
     def restore_cursor(self):
         self._cursor_hidden = False
-        self.unsetCursor()
-        self.video_container.unsetCursor()
-        self.fullscreen_page.unsetCursor()
-        if hasattr(self, 'fs_overlay') and self.fs_overlay:
-            self.fs_overlay.unsetCursor()
+        self._apply_cursor_to_fullscreen_targets(None)
 
     def set_volume(self, val: int):
         self.player.set_volume(val)
@@ -800,6 +925,22 @@ class VideoPlayerApp(QMainWindow):
         QTimer.singleShot(100, self.main_overlay.reposition)
 
     # ---------------- QUẢN LÝ FOCUS & OVERLAY ----------------
+    def _is_active_player_window(self) -> bool:
+        if self.is_fullscreen_mode and self.fullscreen_window is not None:
+            return bool(
+                self.fullscreen_window.isVisible()
+                and not self.fullscreen_window.isMinimized()
+                and (self.fullscreen_window.isActiveWindow() or self.isActiveWindow())
+            )
+        return bool(self.isVisible() and not self.isMinimized() and self.isActiveWindow())
+
+    def activateWindow(self):
+        if self.is_fullscreen_mode and self.fullscreen_window is not None:
+            self.fullscreen_window.raise_()
+            self.fullscreen_window.activateWindow()
+        else:
+            super().activateWindow()
+
     def _on_application_state_changed(self, state):
         if state != Qt.ApplicationState.ApplicationActive:
             self.hide_all_overlays(mark_deactivated=True)
@@ -835,7 +976,7 @@ class VideoPlayerApp(QMainWindow):
         app = QApplication.instance()
         if app is None or app.applicationState() != Qt.ApplicationState.ApplicationActive:
             return False
-        if not self.isVisible() or self.isMinimized() or not self.isActiveWindow():
+        if not self._is_active_player_window():
             return False
         if self._awaiting_user_interaction:
             cur_pos = QCursor.pos()
@@ -848,7 +989,7 @@ class VideoPlayerApp(QMainWindow):
         return True
 
     def _show_fullscreen_overlay_if_active(self):
-        if self.is_fullscreen_mode and not self._awaiting_user_interaction and self.isActiveWindow():
+        if self.is_fullscreen_mode and not self._awaiting_user_interaction and self._is_active_player_window():
             self.fs_overlay.show_overlay()
 
     # ---------------- HOVER & TIẾN ĐỘ ----------------
@@ -880,6 +1021,8 @@ class VideoPlayerApp(QMainWindow):
         self.fs_overlay.update_play_button(is_playing)
         if self.popout_window:
             self.popout_window.update_play_button(is_playing)
+        if not is_playing:
+            self._flush_current_progress()
 
     def _on_volume_changed(self, volume: int, is_muted: bool):
         self.controls_bar.update_volume(volume, is_muted)
@@ -898,6 +1041,7 @@ class VideoPlayerApp(QMainWindow):
     def _update_progress_tick(self):
         # Tự động phát tập tiếp theo khi hết video
         if self.player.get_state() == vlc.State.Ended:
+            self._flush_current_progress()
             self.play_next_episode()
             return
 
@@ -925,12 +1069,15 @@ class VideoPlayerApp(QMainWindow):
                 if self.popout_window:
                     self.popout_window.overlay.update_time(cur_str, tot_str)
 
-                # Lưu lịch sử
+                # Lưu lịch sử vào RAM và đồng bộ xuống SQLite theo chu kỳ 3 giây
                 self.history[self.current_video_path] = {
                     "pos": current_sec,
                     "pct": progress_pct
                 }
-                save_history(self.history)
+                now_mono = time.monotonic()
+                if now_mono - self._last_history_save_ts >= 3.0:
+                    upsert_history_progress(self.current_video_path, current_sec, progress_pct)
+                    self._last_history_save_ts = now_mono
                 self.sidebar.update_progress(self.current_video_path, progress_pct)
 
     # ---------------- FULLSCREEN VIDEO ----------------
@@ -944,21 +1091,26 @@ class VideoPlayerApp(QMainWindow):
         if self.is_fullscreen_mode:
             return
 
-        # Ghi nhớ trạng thái phóng to trước khi vào Fullscreen (BUG-01 Fix)
+        # Ghi nhớ trạng thái & vị trí cửa sổ trước khi vào Fullscreen (BUG-01 Fix)
         self._was_maximized = self.isMaximized()
+        if not self._was_maximized:
+            self._normal_geometry = self.geometry()
 
         if self.popout_window is not None:
             self.restore_video_from_popout()
 
         self.is_fullscreen_mode = True
+        self._entering_fullscreen = True
         self._awaiting_user_interaction = False
         self.main_overlay.hide_overlay()
         self.controls_bar.hide_overlays()
 
-        self.video_container.setParent(self.fullscreen_page)
-        self.fullscreen_page_layout.addWidget(self.video_container)
+        self.fullscreen_window = FullscreenVideoWindow(self)
+        self.video_container.setParent(self.fullscreen_window)
+        self.fullscreen_window.video_layout.addWidget(self.video_container)
         self.video_container.setMinimumHeight(0)
         self.video_container.setMaximumHeight(16777215)
+        self.video_container.setContentsMargins(0, 0, 0, 0)
         self.video_container.show()
         self.attach_video_to_main()
 
@@ -967,8 +1119,11 @@ class VideoPlayerApp(QMainWindow):
         self.fs_overlay.set_target_widget(self.video_container)
         self.fs_overlay.update_play_button(self.player.is_playing())
 
-        self.stacked_widget.setCurrentIndex(2)
-        self.showFullScreen()
+        self.fullscreen_window.enter_true_fullscreen(self)
+        self.fullscreen_window.setFocus()
+        self.hide()
+        self._entering_fullscreen = False
+        self._awaiting_user_interaction = False
         self.show_fullscreen_cursor()
         QTimer.singleShot(150, self._show_fullscreen_overlay_if_active)
 
@@ -979,23 +1134,34 @@ class VideoPlayerApp(QMainWindow):
         self.is_fullscreen_mode = False
         self.restore_cursor()
         self.fs_overlay.hide_overlay()
+        fs_win = self.fullscreen_window
+        self.fullscreen_window = None
 
         self.video_container.setParent(self.video_area_widget)
         self.video_area_layout.insertWidget(0, self.video_container)
         self.video_container.setMinimumHeight(300)
         self.video_container.show()
+
+        self.stacked_widget.setCurrentIndex(1)
+
+        # Khôi phục trạng thái & kích thước cửa sổ chính xác (BUG-01 Fix)
+        if getattr(self, "_was_maximized", False):
+            self.showMaximized()
+        else:
+            self.showNormal()
+            if getattr(self, "_normal_geometry", None) is not None:
+                self.setGeometry(self._normal_geometry)
+
+        self.raise_()
+        super().activateWindow()
         self.attach_video_to_main()
 
         self.main_overlay.set_target_widget(self.video_container)
         self.fs_overlay.set_target_widget(self.video_container)
 
-        self.stacked_widget.setCurrentIndex(1)
-        
-        # Khôi phục trạng thái cửa sổ chính xác (BUG-01 Fix)
-        if getattr(self, "_was_maximized", False):
-            self.showMaximized()
-        else:
-            self.showNormal()
+        if fs_win is not None:
+            fs_win._closing_internally = True
+            fs_win.close()
 
         QTimer.singleShot(150, self.main_overlay.reposition)
 
@@ -1065,7 +1231,7 @@ class VideoPlayerApp(QMainWindow):
         if event.type() == QEvent.Type.ActivationChange:
             if not self.isActiveWindow():
                 active_win = QApplication.activeWindow()
-                if active_win not in (self.main_overlay, self.fs_overlay):
+                if active_win not in (self.main_overlay, self.fs_overlay, self.fullscreen_window):
                     if active_win is None:
                         self.hide_all_overlays(mark_deactivated=True)
                     else:
@@ -1079,7 +1245,10 @@ class VideoPlayerApp(QMainWindow):
                 self.popout_window.mark_deactivated()
 
     def hideEvent(self, event):
-        self._hide_main_overlays(mark_deactivated=True)
+        if not self._entering_fullscreen and not (
+            self.is_fullscreen_mode and self.fullscreen_window is not None
+        ):
+            self._hide_main_overlays(mark_deactivated=True)
         super().hideEvent(event)
 
     def showEvent(self, event):
@@ -1109,12 +1278,31 @@ class VideoPlayerApp(QMainWindow):
         urls = event.mimeData().urls()
         if urls:
             path = urls[0].toLocalFile()
-            if os.path.exists(path):
+            if path:
                 self.handle_dropped_path(path)
                 event.acceptProposedAction()
 
+    def clear_application_data(self) -> dict:
+        """
+        Xóa sạch dữ liệu riêng của ứng dụng (database lịch sử, bản sao lưu, thumbnail cache)
+        mà không bao giờ tác động tới tệp video của người dùng.
+        """
+        if hasattr(self, "preview_manager") and self.preview_manager:
+            self.preview_manager.release_video()
+        if self.thumb_worker:
+            self.thumb_worker.clear_tasks()
+        close_history_db(create_final_backup=False)
+        result = clear_application_data(config.user_data_dir, include_backups=True)
+        os.makedirs(config.THUMB_CACHE_DIR, exist_ok=True)
+        os.makedirs(config.BACKUP_DIR, exist_ok=True)
+        self.history = load_history()
+        if hasattr(self, "landing_page") and self.landing_page:
+            self.landing_page.update_recent_history(self.history)
+        return result
+
     def closeEvent(self, event):
         self.hide_all_overlays(mark_deactivated=False)
+        self._flush_current_progress()
         app = QApplication.instance()
         if app is not None:
             try:
@@ -1125,10 +1313,16 @@ class VideoPlayerApp(QMainWindow):
             self.preview_manager.stop()
         if self.thumb_worker:
             self.thumb_worker.stop()
+        if self.fullscreen_window is not None:
+            fs_win = self.fullscreen_window
+            self.fullscreen_window = None
+            fs_win._closing_internally = True
+            fs_win.close()
         if self.popout_window:
             popout = self.popout_window
             self.popout_window = None
             popout.close()
-        self.player.stop()
+        self.player.release_media()
         save_history(self.history)
+        close_history_db(create_final_backup=True)
         event.accept()

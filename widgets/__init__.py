@@ -2,6 +2,7 @@ from .autofit_list import AutoFitListWidget
 from .clickable_slider import ClickableSlider
 from .episode_item import EpisodeItemWidget
 from .floating_window import FloatingVideoWindow
+from .fullscreen_window import FullscreenVideoWindow
 from .landing_widget import LandingPage
 from .marquee_label import MarqueeLabel
 from .controls_bar import PlayerControlsBar
@@ -17,6 +18,7 @@ __all__ = [
     "ClickableSlider",
     "EpisodeItemWidget",
     "FloatingVideoWindow",
+    "FullscreenVideoWindow",
     "LandingPage",
     "MarqueeLabel",
     "PlayerControlsBar",
