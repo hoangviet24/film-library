@@ -15,7 +15,7 @@ def collect_dir(src, dst):
 
 datas = collect_dir('vlc', 'vlc') + collect_dir('assets', 'assets')
 binaries = []
-hiddenimports = ['cv2', 'PIL', 'numpy', 'winreg', 'ctypes']
+hiddenimports = ['cv2', 'PIL', 'numpy', 'winreg', 'ctypes', 'sqlite3']
 
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

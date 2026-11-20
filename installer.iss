@@ -2,7 +2,7 @@
 ; Fluent Media Player - Professional Windows Desktop Packaging
 
 #define MyAppName "Fluent Media Player"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppExeName "FluentMediaPlayer.exe"
 #define MyAppAssocKey "FluentMediaPlayer.Video"
 #define MyOutputDir "release\installer"
@@ -28,7 +28,7 @@ SolidCompression=yes
 Compression=lzma2/fast
 
 ; Privileges & Installation Mode
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir={#MyOutputDir}
 OutputBaseFilename={#MyOutputBaseFilename}

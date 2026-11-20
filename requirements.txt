@@ -1,0 +1,10 @@
+# Fluent Media Player - Python Dependencies
+# Core runtime
+PyQt6>=6.6.0
+python-vlc>=3.0.18121
+
+# Optional (enable video thumbnails, seekbar frame preview & fallback metadata)
+opencv-python>=4.8.0
+
+# Build / Packaging (dev only)
+pyinstaller>=6.0.0

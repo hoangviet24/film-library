@@ -1,6 +1,12 @@
 import os
 from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker
-from config import THUMB_CACHE_DIR
+from config import THUMB_CACHE_DIR, VALID_VIDEO_EXTENSIONS
+from security import (
+    FileSecurityError,
+    get_safe_thumbnail_path,
+    validate_media_input,
+    verify_contained_file,
+)
 
 try:
     import cv2
@@ -10,33 +16,39 @@ try:
 except ImportError:
     HAS_OPENCV = False
 
+
 def get_cached_thumbnail(video_path: str) -> str | None:
     """
-    Trả về đường dẫn ảnh thumbnail đã cache nếu tồn tại.
+    Trả về đường dẫn ảnh thumbnail đã cache an toàn (băm SHA-256 theo đường dẫn tuyệt đối)
+    nằm hoàn toàn trong THUMB_CACHE_DIR.
     """
     try:
-        filename = os.path.basename(video_path)
-        thumb_path = os.path.join(THUMB_CACHE_DIR, f"{filename}.jpg")
-        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+        if not video_path:
+            return None
+        thumb_path = get_safe_thumbnail_path(video_path, THUMB_CACHE_DIR)
+        if verify_contained_file(thumb_path, THUMB_CACHE_DIR) and os.path.getsize(thumb_path) > 0:
             return thumb_path
     except Exception:
         pass
     return None
 
+
 def generate_thumbnail(video_path: str) -> str | None:
     """
-    Trích xuất một khung hình từ video và lưu dưới dạng ảnh JPG vào thư mục cache.
-    Ưu tiên lấy khung hình ở giây thứ 5, nếu không được thì lấy khung hình đầu tiên (giây 0).
+    Trích xuất một khung hình từ video hợp lệ và lưu nguyên tử (atomic replace)
+    vào ảnh JPG trong thư mục cache.
     """
-    if not HAS_OPENCV:
+    if not HAS_OPENCV or not video_path:
         return None
+    cap = None
+    tmp_path = None
     try:
-        filename = os.path.basename(video_path)
-        thumb_path = os.path.join(THUMB_CACHE_DIR, f"{filename}.jpg")
-        if os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+        abs_video = validate_media_input(video_path, VALID_VIDEO_EXTENSIONS)
+        thumb_path = get_safe_thumbnail_path(abs_video, THUMB_CACHE_DIR)
+        if verify_contained_file(thumb_path, THUMB_CACHE_DIR) and os.path.getsize(thumb_path) > 0:
             return thumb_path
 
-        cap = cv2.VideoCapture(video_path)
+        cap = cv2.VideoCapture(abs_video)
         if not cap.isOpened():
             return None
 
@@ -45,16 +57,29 @@ def generate_thumbnail(video_path: str) -> str | None:
         if not success or frame is None:
             cap.set(cv2.CAP_PROP_POS_MSEC, 0)
             success, frame = cap.read()
-            
+
         if success and frame is not None:
             frame = cv2.resize(frame, (120, 68), interpolation=cv2.INTER_AREA)
-            cv2.imwrite(thumb_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-            cap.release()
-            return thumb_path
-        cap.release()
-    except Exception:
+            tmp_path = thumb_path + ".tmp.jpg"
+            if cv2.imwrite(tmp_path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85]) and os.path.exists(tmp_path):
+                os.replace(tmp_path, thumb_path)
+                tmp_path = None
+                return thumb_path
+    except (FileSecurityError, Exception):
         pass
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
     return None
+
 
 class ThumbnailWorker(QThread):
     """

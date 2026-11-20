@@ -1,4 +1,5 @@
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QFrame
 
 class VlcVideoWidget(QFrame):
@@ -17,10 +18,16 @@ class VlcVideoWidget(QFrame):
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setLineWidth(0)
         self.setMidLineWidth(0)
+        self.setContentsMargins(0, 0, 0, 0)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self.setMouseTracking(True)
+        pal = self.palette()
+        black = QColor("#000000")
+        pal.setColor(QPalette.ColorRole.Window, black)
+        pal.setColor(QPalette.ColorRole.Base, black)
+        self.setPalette(pal)
         self.setStyleSheet("background-color: #000000; border: none; outline: none; margin: 0px; padding: 0px;")
 
     def paintEngine(self):

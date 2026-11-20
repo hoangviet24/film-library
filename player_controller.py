@@ -1,6 +1,8 @@
 import sys
 import vlc
 from PyQt6.QtCore import QObject, pyqtSignal
+from config import VALID_VIDEO_EXTENSIONS
+from security import FileSecurityError, get_safe_vlc_args, sanitize_for_log, validate_media_input
 
 class PlayerController(QObject):
     """
@@ -13,11 +15,7 @@ class PlayerController(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        vlc_args = [
-            "--quiet",
-            "--no-xlib",
-            "--no-video-title-show"
-        ]
+        vlc_args = get_safe_vlc_args()
         self.vlc_instance = vlc.Instance(vlc_args)
         if self.vlc_instance is None:
             self.vlc_instance = vlc.Instance()
@@ -36,15 +34,23 @@ class PlayerController(QObject):
         if sys.platform.startswith('win'):
             self.media_player.set_hwnd(int(hwnd))
 
-    def load_media(self, file_path: str):
-        media = self.vlc_instance.media_new(file_path)
-        self.media_player.set_media(media)
-        if self._current_hwnd:
-            self.set_hwnd(self._current_hwnd)
-        self.media_player.video_set_mouse_input(False)
-        self.media_player.video_set_key_input(False)
-        self.set_rate(self._rate)
-        self.set_volume(self._volume)
+    def load_media(self, file_path: str) -> bool:
+        try:
+            safe_path = validate_media_input(file_path, VALID_VIDEO_EXTENSIONS)
+            media = self.vlc_instance.media_new(safe_path)
+            if media is None:
+                return False
+            self.media_player.set_media(media)
+            if self._current_hwnd:
+                self.set_hwnd(self._current_hwnd)
+            self.media_player.video_set_mouse_input(False)
+            self.media_player.video_set_key_input(False)
+            self.set_rate(self._rate)
+            self.set_volume(self._volume)
+            return True
+        except (FileSecurityError, Exception) as exc:
+            print(f"Không thể nạp tệp media an toàn: {sanitize_for_log(str(exc))}")
+            return False
 
     def play(self):
         self.media_player.play()

@@ -1,12 +1,12 @@
 import os
 import sys
-import subprocess
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap, QGuiApplication
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel,
-    QPushButton, QTabWidget, QWidget, QFrame, QScrollArea
+    QPushButton, QTabWidget, QWidget, QFrame, QScrollArea, QMessageBox
 )
+from security import FileSecurityError, open_in_explorer_safely, sanitize_for_log
 from styles import (
     DIALOG_STYLE, BTN_CONTROL_STYLE, BTN_PRIMARY_STYLE, SCROLLBAR_STYLE,
     COLOR_BG_CARD, COLOR_BG_ELEVATED, COLOR_ACCENT,
@@ -78,6 +78,7 @@ class VideoPropertiesDialog(QDialog):
         header_info.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self.lbl_header_title = QLabel(os.path.basename(self.file_path))
+        self.lbl_header_title.setTextFormat(Qt.TextFormat.PlainText)
         self.lbl_header_title.setWordWrap(True)
         self.lbl_header_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.lbl_header_title.setStyleSheet("""
@@ -209,6 +210,7 @@ class VideoPropertiesDialog(QDialog):
         lbl_key.setFixedWidth(145)
 
         lbl_val = QLabel(default_val)
+        lbl_val.setTextFormat(Qt.TextFormat.PlainText)
         lbl_val.setWordWrap(True)
         lbl_val.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         lbl_val.setStyleSheet(f"color: {COLOR_TEXT_PRIMARY}; font-size: 13px; font-weight: 600; background: transparent; border: none;")
@@ -448,6 +450,7 @@ class VideoPropertiesDialog(QDialog):
             title = stream.get("title", "")
             header_text = f"Audio Stream #{idx}" + (f" — {title}" if title else "")
             lbl_title = QLabel(header_text)
+            lbl_title.setTextFormat(Qt.TextFormat.PlainText)
             lbl_title.setStyleSheet(f"color: {COLOR_ACCENT}; font-size: 13px; font-weight: 700; border: none; background: transparent;")
             card_layout.addWidget(lbl_title)
 
@@ -521,6 +524,7 @@ class VideoPropertiesDialog(QDialog):
             title = sub.get("title", f"Subtitle #{idx}")
 
             lbl_title = QLabel(f"Subtitle Track #{idx} — {title}")
+            lbl_title.setTextFormat(Qt.TextFormat.PlainText)
             lbl_title.setStyleSheet(f"color: {COLOR_ACCENT}; font-size: 13px; font-weight: 700; border: none; background: transparent;")
             card_layout.addWidget(lbl_title)
 
@@ -539,20 +543,35 @@ class VideoPropertiesDialog(QDialog):
         self.sub_layout.addStretch()
 
     def _open_file_location(self):
-        if not os.path.exists(self.file_path):
-            return
-        norm_path = os.path.normpath(self.file_path)
-        if sys.platform.startswith("win"):
-            subprocess.Popen(f'explorer /select,"{norm_path}"')
-        else:
-            folder = os.path.dirname(norm_path)
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", norm_path])
-            else:
-                subprocess.Popen(["xdg-open", folder])
+        try:
+            open_in_explorer_safely(self.file_path)
+        except (FileSecurityError, Exception) as exc:
+            QMessageBox.warning(
+                self,
+                "Không thể mở thư mục",
+                sanitize_for_log(str(exc)),
+            )
 
     def _copy_full_path(self):
         clipboard = QGuiApplication.clipboard()
         if clipboard:
             clipboard.setText(os.path.normpath(self.file_path))
             self.btn_copy_path.setText("✓ Copied!")
+
+    def _cleanup_worker(self):
+        if self.worker is not None:
+            try:
+                self.worker.metadata_ready.disconnect(self._on_metadata_ready)
+            except (TypeError, RuntimeError):
+                pass
+            if self.worker.isRunning():
+                self.worker.quit()
+                self.worker.wait(3000)
+
+    def done(self, result: int):
+        self._cleanup_worker()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._cleanup_worker()
+        super().closeEvent(event)

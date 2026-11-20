@@ -1,13 +1,20 @@
 import os
-import sys
 import json
 import math
-import shutil
 import struct
-import subprocess
 import threading
 from datetime import datetime
 from PyQt6.QtCore import QThread, pyqtSignal
+from security import (
+    FileSecurityError,
+    check_disguised_or_invalid_media,
+    find_safe_ffprobe,
+    get_safe_vlc_args,
+    run_ffprobe_safely,
+    sanitize_metadata_text,
+    validate_path,
+    verify_contained_file,
+)
 
 try:
     import cv2
@@ -290,36 +297,17 @@ def invalidate_metadata_cache(file_path: str = None):
 
 
 def _find_ffprobe() -> str | None:
-    """Tìm kiếm ffprobe trên hệ thống."""
-    path = shutil.which("ffprobe")
-    if path and os.path.exists(path):
-        return path
-    return None
+    """Tìm kiếm ffprobe an toàn trên hệ thống (bỏ qua CWD chống hijacking)."""
+    return find_safe_ffprobe()
 
 
 def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
-    """Trích xuất metadata chi tiết bằng FFprobe."""
+    """Trích xuất metadata chi tiết bằng FFprobe với giới hạn thời gian và đầu ra."""
     try:
-        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0
-        cmd = [
-            ffprobe_bin,
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_format",
-            "-show_streams",
-            file_path
-        ]
-        res = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=8,
-            creationflags=creationflags
-        )
-        if res.returncode != 0 or not res.stdout:
+        data = run_ffprobe_safely(file_path, ffprobe_bin, timeout_sec=6.0)
+        if not data:
             return None
 
-        data = json.loads(res.stdout.decode("utf-8", errors="replace"))
         streams = data.get("streams", [])
         fmt = data.get("format", {})
 
@@ -342,11 +330,11 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
 
                 width = int(s.get("width", 0) or 0)
                 height = int(s.get("height", 0) or 0)
-                codec_raw = (s.get("codec_name") or "").lower()
-                profile = s.get("profile")
+                codec_raw = sanitize_metadata_text(s.get("codec_name"), max_len=60, default="").lower()
+                profile = sanitize_metadata_text(s.get("profile"), max_len=60, default="")
                 codec_display = VIDEO_CODEC_MAP.get(codec_raw, codec_raw.upper() if codec_raw else "Unavailable")
-                if profile and profile not in ("unknown", "Unavailable") and codec_raw:
-                    codec_display = f"{codec_display} ({profile})"
+                if profile and profile.lower() not in ("unknown", "unavailable") and codec_raw:
+                    codec_display = sanitize_metadata_text(f"{codec_display} ({profile})", max_len=120)
 
                 # Tính FPS
                 fps_val = None
@@ -382,8 +370,8 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
                 s_dur = s.get("duration")
                 dur_val = float(s_dur) if s_dur else fmt_duration
 
-                dar = s.get("display_aspect_ratio")
-                pix_fmt = s.get("pix_fmt") or "Unavailable"
+                dar = sanitize_metadata_text(s.get("display_aspect_ratio"), max_len=40, default="") or None
+                pix_fmt = sanitize_metadata_text(s.get("pix_fmt"), max_len=60, default="Unavailable")
 
                 video_info = {
                     "resolution": f"{width} × {height}" if (width > 0 and height > 0) else "Unavailable",
@@ -391,16 +379,19 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
                     "height": height,
                     "video_quality": classify_video_quality(width, height),
                     "frame_rate": fps_display,
-                    "video_codec": codec_display,
+                    "video_codec": sanitize_metadata_text(codec_display, max_len=120),
                     "bitrate": format_bitrate(v_bitrate_val),
                     "duration": format_duration(dur_val),
-                    "aspect_ratio": calculate_aspect_ratio(width, height, dar),
+                    "aspect_ratio": sanitize_metadata_text(calculate_aspect_ratio(width, height, dar), max_len=60),
                     "pixel_format": pix_fmt,
                 }
 
             elif codec_type == "audio":
-                codec_raw = (s.get("codec_name") or "").lower()
-                codec_display = AUDIO_CODEC_MAP.get(codec_raw, codec_raw.upper() if codec_raw else "Unavailable")
+                codec_raw = sanitize_metadata_text(s.get("codec_name"), max_len=60, default="").lower()
+                codec_display = sanitize_metadata_text(
+                    AUDIO_CODEC_MAP.get(codec_raw, codec_raw.upper() if codec_raw else "Unavailable"),
+                    max_len=120,
+                )
 
                 a_bitrate = s.get("bit_rate")
                 if a_bitrate and str(a_bitrate).isdigit():
@@ -417,9 +408,9 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
                     sr_display = "Unavailable"
 
                 channels = int(s.get("channels", 0) or 0)
-                channel_layout = s.get("channel_layout")
-                lang_raw = tags.get("language") or tags.get("LANGUAGE")
-                title_raw = tags.get("title") or tags.get("TITLE") or ""
+                channel_layout = sanitize_metadata_text(s.get("channel_layout"), max_len=40, default="") or None
+                lang_raw = sanitize_metadata_text(tags.get("language") or tags.get("LANGUAGE"), max_len=32, default="")
+                title_raw = sanitize_metadata_text(tags.get("title") or tags.get("TITLE"), max_len=120, default="")
 
                 audio_streams.append({
                     "stream_index": len(audio_streams) + 1,
@@ -427,15 +418,18 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
                     "bitrate": format_bitrate(a_bitrate_val),
                     "sample_rate": sr_display,
                     "channels": format_channels(channels, channel_layout),
-                    "language": format_language(lang_raw),
+                    "language": sanitize_metadata_text(format_language(lang_raw), max_len=80),
                     "title": title_raw if title_raw else "Default Audio Track" if disposition.get("default") else "Audio Stream",
                 })
 
             elif codec_type == "subtitle":
-                codec_raw = (s.get("codec_name") or "").lower()
-                codec_display = SUBTITLE_CODEC_MAP.get(codec_raw, codec_raw.upper() if codec_raw else "Unavailable")
-                lang_raw = tags.get("language") or tags.get("LANGUAGE")
-                title_raw = tags.get("title") or tags.get("TITLE") or ""
+                codec_raw = sanitize_metadata_text(s.get("codec_name"), max_len=60, default="").lower()
+                codec_display = sanitize_metadata_text(
+                    SUBTITLE_CODEC_MAP.get(codec_raw, codec_raw.upper() if codec_raw else "Unavailable"),
+                    max_len=120,
+                )
+                lang_raw = sanitize_metadata_text(tags.get("language") or tags.get("LANGUAGE"), max_len=32, default="")
+                title_raw = sanitize_metadata_text(tags.get("title") or tags.get("TITLE"), max_len=120, default="")
                 flags = []
                 if disposition.get("default"):
                     flags.append("Default")
@@ -446,8 +440,8 @@ def _extract_via_ffprobe(file_path: str, ffprobe_bin: str) -> dict | None:
                 subtitle_streams.append({
                     "stream_index": len(subtitle_streams) + 1,
                     "codec": codec_display,
-                    "language": format_language(lang_raw),
-                    "title": (title_raw + flag_str).strip() or f"Embedded Track #{len(subtitle_streams) + 1}{flag_str}",
+                    "language": sanitize_metadata_text(format_language(lang_raw), max_len=80),
+                    "title": sanitize_metadata_text((title_raw + flag_str).strip(), max_len=140, default="") or f"Embedded Track #{len(subtitle_streams) + 1}{flag_str}",
                     "source": "Embedded",
                 })
 
@@ -477,10 +471,12 @@ def _extract_via_vlc_and_opencv(file_path: str, file_size: int) -> dict:
     audio_streams = []
     subtitle_streams = []
 
-    # 1. Thử đọc qua libvlc Media tracks_get
+    # 1. Thử đọc qua libvlc Media tracks_get (offline hoàn toàn, tắt Lua)
     if HAS_VLC:
+        inst = None
+        media = None
         try:
-            inst = vlc.Instance("--quiet", "--no-xlib")
+            inst = vlc.Instance(get_safe_vlc_args())
             if inst:
                 media = inst.media_new(file_path)
                 media.parse_with_options(vlc.MediaParseFlag.local, 3000)
@@ -505,9 +501,9 @@ def _extract_via_vlc_and_opencv(file_path: str, file_size: int) -> dict:
                             continue
                         t_type = t.type
                         fourcc_int = t.original_fourcc or t.codec
-                        codec_code = _fourcc_to_str(fourcc_int)
-                        lang = t.language.decode("utf-8", errors="ignore") if isinstance(t.language, bytes) else (t.language or "")
-                        desc = t.description.decode("utf-8", errors="ignore") if isinstance(t.description, bytes) else (t.description or "")
+                        codec_code = sanitize_metadata_text(_fourcc_to_str(fourcc_int), max_len=40, default="").lower()
+                        lang = sanitize_metadata_text(t.language, max_len=32, default="")
+                        desc = sanitize_metadata_text(t.description, max_len=120, default="")
                         br = t.bitrate if hasattr(t, "bitrate") and t.bitrate and t.bitrate > 0 else None
 
                         if t_type == vlc.TrackType.video and width == 0:
@@ -532,33 +528,49 @@ def _extract_via_vlc_and_opencv(file_path: str, file_size: int) -> dict:
                             ch = int(t.u.audio.channels or 0) if (t.u and t.u.audio) else 0
                             sr = int(t.u.audio.rate or 0) if (t.u and t.u.audio) else 0
                             sr_display = f"{sr:,} Hz ({sr / 1000.0:.1f} kHz)" if sr > 0 else "Unavailable"
-                            c_disp = AUDIO_CODEC_MAP.get(codec_code, codec_code.upper() if codec_code else "Unavailable")
+                            c_disp = sanitize_metadata_text(
+                                AUDIO_CODEC_MAP.get(codec_code, codec_code.upper() if codec_code else "Unavailable"),
+                                max_len=120,
+                            )
                             audio_streams.append({
                                 "stream_index": len(audio_streams) + 1,
                                 "codec": c_disp,
                                 "bitrate": format_bitrate(br),
                                 "sample_rate": sr_display,
                                 "channels": format_channels(ch),
-                                "language": format_language(lang),
+                                "language": sanitize_metadata_text(format_language(lang), max_len=80),
                                 "title": desc if desc else f"Audio Track #{len(audio_streams) + 1}",
                             })
 
                         elif t_type == vlc.TrackType.text:
-                            c_disp = SUBTITLE_CODEC_MAP.get(codec_code, codec_code.upper() if codec_code else "Subtitle")
+                            c_disp = sanitize_metadata_text(
+                                SUBTITLE_CODEC_MAP.get(codec_code, codec_code.upper() if codec_code else "Subtitle"),
+                                max_len=120,
+                            )
                             subtitle_streams.append({
                                 "stream_index": len(subtitle_streams) + 1,
                                 "codec": c_disp,
-                                "language": format_language(lang),
+                                "language": sanitize_metadata_text(format_language(lang), max_len=80),
                                 "title": desc if desc else f"Embedded Track #{len(subtitle_streams) + 1}",
                                 "source": "Embedded",
                             })
-                media.release()
-                inst.release()
         except Exception:
             pass
+        finally:
+            if media is not None:
+                try:
+                    media.release()
+                except Exception:
+                    pass
+            if inst is not None:
+                try:
+                    inst.release()
+                except Exception:
+                    pass
 
     # 2. Bổ sung thông số Video qua OpenCV nếu libvlc chưa lấy đủ
     if HAS_OPENCV and (width == 0 or height == 0 or fps_val <= 0 or duration_sec <= 0):
+        cap = None
         try:
             cap = cv2.VideoCapture(file_path)
             if cap.isOpened():
@@ -574,14 +586,19 @@ def _extract_via_vlc_and_opencv(file_path: str, file_size: int) -> dict:
                         duration_sec = frame_count / fps_val
                 if not v_codec_str:
                     fcc = int(cap.get(cv2.CAP_PROP_FOURCC) or 0)
-                    v_codec_str = _fourcc_to_str(fcc)
+                    v_codec_str = sanitize_metadata_text(_fourcc_to_str(fcc), max_len=40, default="").lower()
                 if not v_bitrate_val and hasattr(cv2, "CAP_PROP_BITRATE"):
                     br_kbps = float(cap.get(cv2.CAP_PROP_BITRATE) or 0.0)
                     if br_kbps > 0:
                         v_bitrate_val = int(br_kbps * 1000)
-                cap.release()
         except Exception:
             pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
 
     # Tính tổng bitrate ước tính từ kích thước file / thời lượng nếu stream không ghi riêng
     if not v_bitrate_val and duration_sec > 0 and file_size > 0:
@@ -631,17 +648,20 @@ def _detect_external_subtitles(file_path: str) -> list[dict]:
         }
         if os.path.isdir(folder):
             for fname in sorted(os.listdir(folder)):
+                cand_sub = os.path.join(folder, fname)
+                if not verify_contained_file(cand_sub, folder):
+                    continue
                 name_part, ext_part = os.path.splitext(fname)
                 ext_lower = ext_part.lower()
                 if ext_lower in sub_exts and name_part.lower().startswith(base_name):
                     # Kiểm tra hậu tố ngôn ngữ (ví dụ: movie.vi.srt hoặc movie.en.srt)
-                    suffix = name_part[len(base_name):].strip("._- ")
-                    lang = format_language(suffix) if suffix else "Unknown"
+                    suffix = sanitize_metadata_text(name_part[len(base_name):].strip("._- "), max_len=24, default="")
+                    lang = sanitize_metadata_text(format_language(suffix) if suffix else "Unknown", max_len=80)
                     external_subs.append({
                         "stream_index": 0,
                         "codec": sub_exts[ext_lower],
                         "language": lang,
-                        "title": fname,
+                        "title": sanitize_metadata_text(fname, max_len=140, default="Subtitle"),
                         "source": "External File",
                     })
     except Exception:
@@ -649,42 +669,57 @@ def _detect_external_subtitles(file_path: str) -> list[dict]:
     return external_subs
 
 
+def _unavailable_metadata_result(abs_path: str, error_msg: str) -> dict:
+    return {
+        "exists": False,
+        "error": error_msg,
+        "general": {
+            "file_name": sanitize_metadata_text(os.path.basename(abs_path), max_len=260),
+            "file_type": "Unavailable",
+            "file_location": sanitize_metadata_text(os.path.dirname(abs_path), max_len=260),
+            "full_path": abs_path,
+            "file_size": "Unavailable",
+            "file_size_short": "Unavailable",
+            "created_date": "Unavailable",
+            "modified_date": "Unavailable",
+            "accessed_date": "Unavailable",
+        },
+        "video": {
+            "resolution": "Unavailable",
+            "video_quality": "Unavailable",
+            "frame_rate": "Unavailable",
+            "video_codec": "Unavailable",
+            "bitrate": "Unavailable",
+            "duration": "Unavailable",
+            "aspect_ratio": "Unavailable",
+            "pixel_format": "Unavailable",
+        },
+        "audio_streams": [],
+        "subtitle_streams": [],
+    }
+
+
 def extract_video_metadata(file_path: str) -> dict:
     """
     Trích xuất toàn diện thông tin General, Video, Audio và Subtitles của tệp video.
-    Sử dụng Cache thông minh để phản hồi tức thì ở những lần mở tiếp theo.
+    Kiểm tra an toàn đầu vào và làm sạch chuỗi metadata trước khi đưa ra UI.
     """
-    abs_path = os.path.abspath(file_path)
+    try:
+        abs_path = validate_path(file_path)
+    except FileSecurityError as exc:
+        return _unavailable_metadata_result(str(file_path or ""), str(exc))
+
     norm_path = os.path.normcase(abs_path)
 
     if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
-        return {
-            "exists": False,
-            "error": "Tệp video không tồn tại hoặc đã bị di chuyển / xóa khỏi ổ đĩa.",
-            "general": {
-                "file_name": os.path.basename(abs_path),
-                "file_type": "Unavailable",
-                "file_location": os.path.dirname(abs_path),
-                "full_path": abs_path,
-                "file_size": "Unavailable",
-                "file_size_short": "Unavailable",
-                "created_date": "Unavailable",
-                "modified_date": "Unavailable",
-                "accessed_date": "Unavailable",
-            },
-            "video": {
-                "resolution": "Unavailable",
-                "video_quality": "Unavailable",
-                "frame_rate": "Unavailable",
-                "video_codec": "Unavailable",
-                "bitrate": "Unavailable",
-                "duration": "Unavailable",
-                "aspect_ratio": "Unavailable",
-                "pixel_format": "Unavailable",
-            },
-            "audio_streams": [],
-            "subtitle_streams": [],
-        }
+        return _unavailable_metadata_result(
+            abs_path,
+            "Tệp video không tồn tại hoặc đã bị di chuyển / xóa khỏi ổ đĩa.",
+        )
+
+    valid_media, invalid_reason = check_disguised_or_invalid_media(abs_path)
+    if not valid_media:
+        return _unavailable_metadata_result(abs_path, invalid_reason)
 
     try:
         st = os.stat(abs_path)
@@ -693,14 +728,7 @@ def extract_video_metadata(file_path: str) -> dict:
         ctime = st.st_ctime
         atime = getattr(st, "st_atime", None)
     except Exception as e:
-        return {
-            "exists": False,
-            "error": f"Không thể đọc thuộc tính tệp hệ thống: {e}",
-            "general": {},
-            "video": {},
-            "audio_streams": [],
-            "subtitle_streams": [],
-        }
+        return _unavailable_metadata_result(abs_path, f"Không thể đọc thuộc tính tệp hệ thống: {e}")
 
     # Kiểm tra Cache
     with _CACHE_LOCK:
@@ -712,9 +740,9 @@ def extract_video_metadata(file_path: str) -> dict:
     file_type_str = VIDEO_TYPE_MAP.get(ext, f"{ext.upper().lstrip('.')} Video ({ext})" if ext else "Video File")
 
     general_info = {
-        "file_name": os.path.basename(abs_path),
+        "file_name": sanitize_metadata_text(os.path.basename(abs_path), max_len=260),
         "file_type": file_type_str,
-        "file_location": os.path.dirname(abs_path),
+        "file_location": sanitize_metadata_text(os.path.dirname(abs_path), max_len=260),
         "full_path": abs_path,
         "file_size": format_file_size(file_size),
         "file_size_short": format_file_size_short(file_size),
